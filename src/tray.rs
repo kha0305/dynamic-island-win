@@ -28,6 +28,7 @@ pub const IDM_TOGGLE_FULLSCREEN: usize = 1005;
 pub const IDM_TOGGLE_VISUALIZER: usize = 1006;
 pub const IDM_TOGGLE_AUTOSTART: usize = 1007;
 pub const IDM_CHECK_UPDATE: usize = 1008;
+pub const IDM_TOGGLE_NOTCH_COLLAPSE: usize = 1009;
 pub const IDM_EXIT: usize = 1099;
 pub const IDM_MONITOR_BASE: usize = 2000;
 pub const IDM_MONITOR_MAX: usize = 2031;
@@ -111,6 +112,12 @@ impl TrayIcon {
         append_menu_item(menu, IDM_TOGGLE_EXPANDED, expand_label, false);
 
         let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
+        append_menu_item(
+            menu,
+            IDM_TOGGLE_NOTCH_COLLAPSE,
+            "Thu gọn mép trên sau 4 giây",
+            config.notch_collapse_after_4s,
+        );
         append_menu_item(
             menu,
             IDM_TOGGLE_AUTO_HIDE,

@@ -239,8 +239,17 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 - **Thay đổi:** Mở rộng vùng chạm lên `29 DIP` + `+-14 DIP` hai đầu (`src/state.rs`), cập nhật thanh tua + thời gian tức thời + halo nút kéo khi kéo (`src/renderer.rs`), triển khai `WM_LBUTTONDOWN -> SetCapture -> WM_MOUSEMOVE -> WM_LBUTTONUP -> ReleaseCapture` cùng `WM_MOUSEACTIVATE (MA_NOACTIVATE)` và `should_collapse_expanded_on_blank_click` (`src/window.rs`).
 - **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch, `cargo test --locked` đạt `25/25` (`0.14s`), `cargo build --release --locked` tạo `.exe` `747,008 bytes` / `ZIP` `335,459 bytes`; chạy thử `.exe` xác nhận giữ nguyên `419` khi kéo vượt biên hoặc bấm trượt quanh vùng nút/thời gian, thu gọn về `279` khi bấm vùng tiêu đề, `NV_MODULES=0`, `CLEAN_EXIT=True`. Nâng phiên bản lên `v0.1.1` để đẩy GitHub Release tự động cập nhật.
 
+### Mục #014 — Chế độ Notch bám mép trên `y = 0` không vướng tab (`tab-safe-notch`)
+- **Đặc tả & Kế hoạch:** [specs/tab-safe-notch/spec.md](specs/tab-safe-notch/spec.md), [specs/tab-safe-notch/plan.md](specs/tab-safe-notch/plan.md), [specs/tab-safe-notch/tasks.md](specs/tab-safe-notch/tasks.md).
+- **Thay đổi:**
+  - `src/state.rs`: Bổ sung `top: SpringScalar` vào `IslandAnimator`, đặt `Slim` thành `152 x 16 DIP` ở `top = 0.0` (và `Compact` ở `top = 2.0` để giữ vùng chạm `y = 0`), thêm `AppConfig::notch_collapse_after_4s` (mặc định `true`), `UiAction::ToggleNotchCollapse`, và chia đôi hàng 3 `Settings` (`Gọn mép 4s` | `Màn hình`).
+  - `src/config.rs` & `src/tray.rs`: Lưu/đọc khóa `notch_collapse_after_4s` và thêm `IDM_TOGGLE_NOTCH_COLLAPSE` (`Thu gọn mép trên sau 4 giây`) vào menu System Tray.
+  - `src/renderer.rs`: Thiết kế lại `draw_slim` (chấm ảnh bìa `10x10` + vạch tiến độ mảnh `2.4 DIP` + 3 vạch sóng nhạc thu gọn) qua `draw_visualizer_bars_sized` dùng chung và vẽ tile `Gọn mép 4s` trong `Settings`.
+  - `src/window.rs`: Thêm `TIMER_COMPACT_TO_NOTCH_ID` (4 giây) bung `Compact` 4s khi có bài mới rồi thu về `Slim` Notch, hủy timer khi rê chuột chạm dải Notch và tiếp tục giữ `0%` CPU khi tạm dừng.
+- **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch, `cargo test --locked` đạt `26/26` (`0.13s`), `cargo build --release --locked` biên dịch [target/release/win-dynamic-island.exe](target/release/win-dynamic-island.exe) (`753,152 bytes` trước khi nâng tag `0.1.2`), `EMOJI_HITS=0`; nâng phiên bản `v0.1.2` và đẩy GitHub Releases (giữ nguyên `dist\win-dynamic-island.exe` `v0.1.1` theo yêu cầu người dùng để thử tự cập nhật).
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn thành toàn bộ Phase 1–7 cho bản **v0.1.1**: Liquid Glass đồng màu video, kéo mượt Timeline với `SetCapture` + chống thu gọn nhầm, tự thu gọn 5 giây, Single-Instance, Static-CRT Portable (`VCRUNTIME_DEP=False`), Tự động cập nhật GitHub Releases (`WinHTTP` + `SHA-256`) và CI Release Workflow [.github/workflows/release.yml](.github/workflows/release.yml).
-- **Hạng mục cho giai đoạn tiếp theo (v0.2 trong `spec.md`):** Khi người dùng có nhu cầu mở rộng, sẽ tiếp tục lập spec/plan cho HUD âm lượng/pin/CapsLock, File Shelf kéo thả tệp tạm và Pomodoro mini.
+- **Trạng thái hiện tại:** Đã hoàn thành toàn bộ Phase 1–7 cho bản **v0.1.2** (`tab-safe-notch` `152 x 16 DIP` tại `y = 0` + tự thu sau 4 giây, giữ nguyên hiệu ứng Liquid Glass, kéo mượt Timeline, Single-Instance, Static-CRT Portable `VCRUNTIME_DEP=False` và Tự cập nhật GitHub Releases).
+- **Hạng mục cho giai đoạn tiếp theo (v0.2 trong `spec.md`):** Phát hành `v0.1.2` lên GitHub nếu người dùng muốn thử tự cập nhật ngay từ `v0.1.1`, hoặc tiếp tục HUD âm lượng/pin/CapsLock, File Shelf kéo thả tệp tạm và Pomodoro mini.

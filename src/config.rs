@@ -71,6 +71,11 @@ pub fn parse_config(text: &str) -> AppConfig {
                     cfg.visible = b;
                 }
             }
+            "notch_collapse_after_4s" => {
+                if let Some(b) = parse_bool(val) {
+                    cfg.notch_collapse_after_4s = b;
+                }
+            }
             "auto_hide_when_idle" => {
                 if let Some(b) = parse_bool(val) {
                     cfg.auto_hide_when_idle = b;
@@ -99,8 +104,9 @@ pub fn parse_config(text: &str) -> AppConfig {
 
 pub fn serialize_config(cfg: &AppConfig) -> String {
     format!(
-        "visible={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nmonitor_index={}\n",
+        "visible={}\nnotch_collapse_after_4s={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nmonitor_index={}\n",
         cfg.visible,
+        cfg.notch_collapse_after_4s,
         cfg.auto_hide_when_idle,
         cfg.auto_hide_fullscreen,
         cfg.visualizer_enabled,
@@ -222,6 +228,7 @@ mod tests {
     fn config_roundtrip_and_invalid_input_resilience() {
         let cfg = AppConfig {
             visible: false,
+            notch_collapse_after_4s: false,
             auto_hide_when_idle: true,
             auto_hide_fullscreen: false,
             visualizer_enabled: false,
@@ -231,6 +238,7 @@ mod tests {
         let serialized = serialize_config(&cfg);
         let parsed = parse_config(&serialized);
         assert!(!parsed.visible);
+        assert!(!parsed.notch_collapse_after_4s);
         assert!(parsed.auto_hide_when_idle);
         assert!(!parsed.auto_hide_fullscreen);
         assert!(!parsed.visualizer_enabled);
@@ -239,6 +247,7 @@ mod tests {
         let corrupted = "# comment\nbad_line\nmonitor_index=abc\nvisible=not_a_bool\nauto_hide_when_idle=1\n";
         let fallback = parse_config(corrupted);
         assert!(fallback.visible);
+        assert!(fallback.notch_collapse_after_4s);
         assert!(fallback.auto_hide_when_idle);
         assert!(fallback.auto_hide_fullscreen);
         assert_eq!(fallback.monitor_index, 0);

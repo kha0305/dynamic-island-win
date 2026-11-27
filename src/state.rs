@@ -17,6 +17,7 @@ pub enum UiAction {
     MediaPlayPause,
     MediaNext,
     SeekTimeline,
+    ToggleNotchCollapse,
     ToggleAutoHideIdle,
     ToggleAutoHideFullscreen,
     ToggleVisualizer,
@@ -149,6 +150,7 @@ impl Default for MediaDisplayState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppConfig {
     pub visible: bool,
+    pub notch_collapse_after_4s: bool,
     pub auto_hide_when_idle: bool,
     pub auto_hide_fullscreen: bool,
     pub visualizer_enabled: bool,
@@ -160,6 +162,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             visible: true,
+            notch_collapse_after_4s: true,
             auto_hide_when_idle: false,
             auto_hide_fullscreen: true,
             visualizer_enabled: true,
@@ -191,10 +194,18 @@ pub struct PixelRect {
     pub bottom: i32,
 }
 
+pub fn target_top_for_mode(mode: IslandMode) -> f32 {
+    match mode {
+        IslandMode::Hidden | IslandMode::Slim => 0.0,
+        IslandMode::Compact => 2.0,
+        IslandMode::Expanded | IslandMode::Settings => TOP_MARGIN_DIP,
+    }
+}
+
 pub fn target_dimensions_for_mode(mode: IslandMode) -> (f32, f32, f32, f32) {
     match mode {
         IslandMode::Hidden => (116.0, 4.0, 2.0, 0.0),
-        IslandMode::Slim => (196.0, 30.0, 15.0, 1.0),
+        IslandMode::Slim => (152.0, 16.0, 8.0, 1.0),
         IslandMode::Compact => (276.0, 36.0, 18.0, 1.0),
         IslandMode::Expanded => (416.0, 160.0, 28.0, 1.0),
         IslandMode::Settings => (424.0, 232.0, 26.0, 1.0),
@@ -278,6 +289,7 @@ impl SpringScalar {
 
 pub struct IslandAnimator {
     pub target_mode: IslandMode,
+    pub top: SpringScalar,
     pub width: SpringScalar,
     pub height: SpringScalar,
     pub corner_radius: SpringScalar,
@@ -289,6 +301,7 @@ pub struct IslandAnimator {
 impl IslandAnimator {
     pub fn new(initial_mode: IslandMode) -> Self {
         let (w, h, r, a) = target_dimensions_for_mode(initial_mode);
+        let top = target_top_for_mode(initial_mode);
         let content_a = if initial_mode == IslandMode::Hidden {
             0.0
         } else {
@@ -296,6 +309,7 @@ impl IslandAnimator {
         };
         Self {
             target_mode: initial_mode,
+            top: SpringScalar::new(top),
             width: SpringScalar::new(w),
             height: SpringScalar::new(h),
             corner_radius: SpringScalar::new(r),
@@ -313,8 +327,10 @@ impl IslandAnimator {
         self.target_mode = mode;
 
         let (w, h, r, a) = target_dimensions_for_mode(mode);
+        let top = target_top_for_mode(mode);
         if was_hidden && mode != IslandMode::Hidden {
             // Đánh thức từ trạng thái ẩn: đặt kích thước khởi điểm mảnh sát mép trên để bung ra mượt.
+            self.top.snap(0.0);
             self.width.snap(116.0);
             self.height.snap(6.0);
             self.corner_radius.snap(3.0);
@@ -322,6 +338,7 @@ impl IslandAnimator {
             self.content_alpha.snap(0.0);
         }
 
+        self.top.set_target(top);
         self.width.set_target(w);
         self.height.set_target(h);
         self.corner_radius.set_target(r);
@@ -338,7 +355,8 @@ impl IslandAnimator {
     }
 
     pub fn is_animating(&self) -> bool {
-        !(self.width.is_settled()
+        !(self.top.is_settled()
+            && self.width.is_settled()
             && self.height.is_settled()
             && self.corner_radius.is_settled()
             && self.opacity.is_settled()
@@ -353,13 +371,14 @@ impl IslandAnimator {
         self.last_step = Some(now);
 
         // Lò xo kích thước nảy nhẹ chuẩn Dynamic Island (~zeta ~ 0.78).
+        let moving_t = self.top.step(dt, 330.0, 28.5);
         let moving_w = self.width.step(dt, 330.0, 28.5);
         let moving_h = self.height.step(dt, 310.0, 27.5);
         let moving_r = self.corner_radius.step(dt, 320.0, 29.0);
         let moving_o = self.opacity.step(dt, 380.0, 36.0);
         let moving_c = self.content_alpha.step(dt, 280.0, 32.0);
 
-        let active = moving_w || moving_h || moving_r || moving_o || moving_c;
+        let active = moving_t || moving_w || moving_h || moving_r || moving_o || moving_c;
         if !active {
             self.last_step = None;
         }
@@ -367,6 +386,7 @@ impl IslandAnimator {
     }
 
     pub fn current_pill(&self) -> PillRectDip {
+        let top = self.top.value.clamp(0.0, 24.0);
         let width = self.width.value.clamp(24.0, MAX_SURFACE_WIDTH_DIP - 8.0);
         let height = self.height.value.clamp(2.0, MAX_SURFACE_HEIGHT_DIP - 12.0);
         let max_radius = (height * 0.5).max(1.0);
@@ -374,7 +394,7 @@ impl IslandAnimator {
         let left = (MAX_SURFACE_WIDTH_DIP - width) * 0.5;
         PillRectDip {
             left,
-            top: TOP_MARGIN_DIP,
+            top,
             width,
             height,
             corner_radius,
@@ -594,6 +614,15 @@ fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
             rect: UiRectDip {
                 left: inner_left,
                 top: row3_top,
+                right: inner_left + col_w,
+                bottom: row3_top + row_h,
+            },
+            action: UiAction::ToggleNotchCollapse,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left + col_w + gap,
+                top: row3_top,
                 right: inner_right,
                 bottom: row3_top + row_h,
             },
@@ -686,9 +715,9 @@ mod tests {
     fn settings_hitboxes_stay_inside_pill_and_do_not_overlap() {
         let mut anim = IslandAnimator::new(IslandMode::Settings);
         let pill = anim.current_pill();
-        let mut hitboxes = Vec::with_capacity(8);
+        let mut hitboxes = Vec::with_capacity(9);
         fill_interactive_hitboxes(pill, IslandMode::Settings, &mut hitboxes);
-        assert_eq!(hitboxes.len(), 8);
+        assert_eq!(hitboxes.len(), 9);
 
         for hb in &hitboxes {
             assert!(hb.rect.left >= pill.left);
@@ -822,5 +851,20 @@ mod tests {
             effective_mode(IslandMode::Compact, auto_idle, false, true),
             IslandMode::Compact
         );
+    }
+
+    #[test]
+    fn slim_notch_and_compact_preserve_top_edge_hit_area() {
+        let slim_pill = IslandAnimator::new(IslandMode::Slim).current_pill();
+        assert_eq!(slim_pill.top, 0.0);
+        assert_eq!(slim_pill.width, 152.0);
+        assert_eq!(slim_pill.height, 16.0);
+        let (slim_rgn, _) = compute_pill_region_px(slim_pill, 1.0);
+        assert_eq!(slim_rgn.top, 0);
+
+        let compact_pill = IslandAnimator::new(IslandMode::Compact).current_pill();
+        assert_eq!(compact_pill.top, 2.0);
+        let (compact_rgn, _) = compute_pill_region_px(compact_pill, 1.0);
+        assert_eq!(compact_rgn.top, 0);
     }
 }

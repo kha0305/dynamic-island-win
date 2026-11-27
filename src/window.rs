@@ -34,7 +34,8 @@ use crate::state::{
 use crate::tray::{
     IDM_CHECK_UPDATE, IDM_EXIT, IDM_MONITOR_BASE, IDM_MONITOR_MAX, IDM_OPEN_SETTINGS,
     IDM_TOGGLE_AUTO_HIDE, IDM_TOGGLE_AUTOSTART, IDM_TOGGLE_EXPANDED, IDM_TOGGLE_FULLSCREEN,
-    IDM_TOGGLE_VISIBLE, IDM_TOGGLE_VISUALIZER, TrayIcon, WM_APP_TRAY, to_wide_null,
+    IDM_TOGGLE_NOTCH_COLLAPSE, IDM_TOGGLE_VISIBLE, IDM_TOGGLE_VISUALIZER, TrayIcon, WM_APP_TRAY,
+    to_wide_null,
 };
 use crate::updater::{
     APP_VERSION, UpdateReleaseInfo, UpdaterEvent, WM_APP_UPDATE_EVENT, check_for_updates_async,
@@ -52,7 +53,9 @@ const TIMER_AUTO_COLLAPSE_ID: usize = 1;
 const TIMER_FULLSCREEN_CHECK_ID: usize = 2;
 const TIMER_TIMELINE_TICK_ID: usize = 3;
 const TIMER_STARTUP_UPDATE_ID: usize = 4;
+const TIMER_COMPACT_TO_NOTCH_ID: usize = 5;
 const AUTO_COLLAPSE_DELAY_MS: u32 = 5_000;
+const COMPACT_TO_NOTCH_DELAY_MS: u32 = 4_000;
 const FULLSCREEN_CHECK_INTERVAL_MS: u32 = 800;
 const TIMELINE_TICK_INTERVAL_MS: u32 = 1000;
 const STARTUP_UPDATE_DELAY_MS: u32 = 10_000;
@@ -343,7 +346,13 @@ impl WindowController {
         if self.current_effective_mode() == IslandMode::Hidden {
             self.config.visible = true;
             self.requested_mode = IslandMode::Compact;
+            if !self.mouse_tracked
+                && (self.config.notch_collapse_after_4s || !self.media_state.has_session)
+            {
+                self.schedule_compact_to_notch();
+            }
         } else {
+            self.cancel_compact_to_notch();
             self.config.visible = false;
         }
         self.sync_fullscreen_timer();
@@ -355,11 +364,15 @@ impl WindowController {
     fn wake_from_duplicate_launch(&mut self) {
         self.config.visible = true;
         self.requested_mode = if self.media_state.has_session {
+            self.cancel_compact_to_notch();
             IslandMode::Expanded
         } else {
+            if !self.mouse_tracked {
+                self.schedule_compact_to_notch();
+            }
             IslandMode::Compact
         };
-        if !self.mouse_tracked {
+        if self.requested_mode == IslandMode::Expanded && !self.mouse_tracked {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
         }
         self.sync_fullscreen_timer();
@@ -389,10 +402,12 @@ impl WindowController {
     }
 
     fn sync_timeline_timer(&self) {
-        let need_timeline = self.current_effective_mode() == IslandMode::Expanded
-            && self.media_state.has_session
+        let mode = self.current_effective_mode();
+        let need_timeline = self.media_state.has_session
             && self.media_state.is_playing
-            && self.media_state.timeline.available;
+            && self.media_state.timeline.available
+            && (mode == IslandMode::Expanded
+                || (mode == IslandMode::Slim && !self.config.visualizer_enabled));
         if need_timeline {
             unsafe {
                 let _ = SetTimer(
@@ -433,8 +448,12 @@ impl WindowController {
         let ticker_mode = if self.animator.is_animating() {
             TickerMode::VSync
         } else if self.config.visualizer_enabled
+            && self.media_state.has_session
             && self.media_state.is_playing
-            && self.current_effective_mode() == IslandMode::Compact
+            && matches!(
+                self.current_effective_mode(),
+                IslandMode::Compact | IslandMode::Slim
+            )
         {
             TickerMode::VisualizerSlow
         } else {
@@ -453,10 +472,12 @@ impl WindowController {
             return;
         };
 
+        let was_has_session = self.media_state.has_session;
         let same_track = update.display.has_session
-            && self.media_state.has_session
+            && was_has_session
             && update.display.title == self.media_state.title
             && update.display.artist == self.media_state.artist;
+        let track_changed = update.display.has_session && !same_track;
         let preserve_local_timeline = same_track
             && update.display.timeline.available
             && (self.dragging_timeline
@@ -474,14 +495,28 @@ impl WindowController {
         }
         self.renderer.update_artwork(update.artwork);
 
-        if self.media_state.has_session && self.requested_mode == IslandMode::Slim {
-            // Khi có nhạc, giữ ở chế độ Compact rõ ràng thay vì thu mảnh bé.
-            self.requested_mode = IslandMode::Compact;
-        } else if !self.media_state.has_session
-            && self.requested_mode == IslandMode::Compact
-            && !self.mouse_tracked
-        {
-            self.requested_mode = IslandMode::Slim;
+        if self.media_state.has_session {
+            if track_changed
+                && matches!(self.requested_mode, IslandMode::Slim | IslandMode::Compact)
+            {
+                // Bung Compact 4 giây khi có nhạc mới / đổi bài để nhìn tên bài rồi thu về dải Notch.
+                self.requested_mode = IslandMode::Compact;
+                if self.config.notch_collapse_after_4s && !self.mouse_tracked {
+                    self.schedule_compact_to_notch();
+                } else {
+                    self.cancel_compact_to_notch();
+                }
+            } else if self.requested_mode == IslandMode::Slim
+                && !self.config.notch_collapse_after_4s
+            {
+                self.requested_mode = IslandMode::Compact;
+                self.cancel_compact_to_notch();
+            }
+        } else {
+            self.cancel_compact_to_notch();
+            if self.requested_mode == IslandMode::Compact && !self.mouse_tracked {
+                self.requested_mode = IslandMode::Slim;
+            }
         }
 
         self.apply_target_and_render();
@@ -715,6 +750,34 @@ impl WindowController {
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_AUTO_COLLAPSE_ID) };
     }
 
+    fn schedule_compact_to_notch(&self) {
+        unsafe {
+            let _ = SetTimer(
+                Some(self.hwnd),
+                TIMER_COMPACT_TO_NOTCH_ID,
+                COMPACT_TO_NOTCH_DELAY_MS,
+                None,
+            );
+        }
+    }
+
+    fn cancel_compact_to_notch(&self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_COMPACT_TO_NOTCH_ID) };
+    }
+
+    fn handle_compact_to_notch_timer(&mut self) {
+        self.cancel_compact_to_notch();
+        if !self.mouse_tracked
+            && !self.dragging_timeline
+            && self.requested_mode == IslandMode::Compact
+            && (self.config.notch_collapse_after_4s || !self.media_state.has_session)
+        {
+            self.requested_mode = IslandMode::Slim;
+            self.hovered_action = None;
+            self.apply_target_and_render();
+        }
+    }
+
     fn ensure_mouse_tracked(&mut self) {
         if !self.mouse_tracked {
             let mut tme = TRACKMOUSEEVENT {
@@ -746,7 +809,12 @@ impl WindowController {
         self.cancel_auto_collapse();
         if !self.mouse_tracked && !self.dragging_timeline && self.requested_mode == IslandMode::Expanded
         {
-            self.requested_mode = self.collapsed_rest_mode();
+            self.requested_mode =
+                if self.config.notch_collapse_after_4s || !self.media_state.has_session {
+                    IslandMode::Slim
+                } else {
+                    self.collapsed_rest_mode()
+                };
             self.hovered_action = None;
             self.apply_target_and_render();
         }
@@ -755,6 +823,7 @@ impl WindowController {
     fn handle_left_button_down(&mut self, lparam: LPARAM) -> CaptureChange {
         self.ensure_mouse_tracked();
         self.cancel_auto_collapse();
+        self.cancel_compact_to_notch();
         let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
         self.pointer_down_pos = Some((x_dip, y_dip));
 
@@ -778,6 +847,7 @@ impl WindowController {
 
     fn handle_mouse_move(&mut self, lparam: LPARAM) {
         self.cancel_auto_collapse();
+        self.cancel_compact_to_notch();
         let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
 
         if self.dragging_timeline {
@@ -824,9 +894,19 @@ impl WindowController {
         }
         self.mouse_tracked = false;
         let hover_changed = self.hovered_action.take().is_some();
-        if self.requested_mode == IslandMode::Compact && !self.media_state.has_session {
-            self.requested_mode = IslandMode::Slim;
-            self.apply_target_and_render();
+        if self.requested_mode == IslandMode::Compact {
+            if !self.media_state.has_session {
+                self.cancel_compact_to_notch();
+                self.requested_mode = IslandMode::Slim;
+                self.apply_target_and_render();
+            } else {
+                if self.config.notch_collapse_after_4s {
+                    self.schedule_compact_to_notch();
+                }
+                if hover_changed && !self.animator.is_animating() {
+                    self.render_current_frame();
+                }
+            }
         } else if self.requested_mode == IslandMode::Expanded {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
             if hover_changed && !self.animator.is_animating() {
@@ -904,16 +984,27 @@ impl WindowController {
         }
 
         self.requested_mode = match self.requested_mode {
-            IslandMode::Slim | IslandMode::Compact => IslandMode::Expanded,
+            IslandMode::Slim | IslandMode::Compact => {
+                self.cancel_compact_to_notch();
+                IslandMode::Expanded
+            }
             IslandMode::Expanded => {
                 self.cancel_auto_collapse();
                 self.collapsed_rest_mode()
             }
-            IslandMode::Settings => IslandMode::Expanded,
+            IslandMode::Settings => {
+                self.cancel_compact_to_notch();
+                IslandMode::Expanded
+            }
             IslandMode::Hidden => IslandMode::Slim,
         };
         if self.requested_mode == IslandMode::Expanded && !self.mouse_tracked {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+        } else if self.requested_mode == IslandMode::Compact
+            && !self.mouse_tracked
+            && self.config.notch_collapse_after_4s
+        {
+            self.schedule_compact_to_notch();
         }
         self.hovered_action = None;
         self.apply_target_and_render();
@@ -958,10 +1049,25 @@ impl WindowController {
     fn execute_ui_action(&mut self, action: UiAction) {
         match action {
             UiAction::OpenSettings => {
+                self.cancel_compact_to_notch();
                 self.requested_mode = IslandMode::Settings;
             }
             UiAction::BackToMedia => {
                 self.requested_mode = IslandMode::Expanded;
+            }
+            UiAction::ToggleNotchCollapse => {
+                self.config.notch_collapse_after_4s = !self.config.notch_collapse_after_4s;
+                if self.config.notch_collapse_after_4s {
+                    if self.requested_mode == IslandMode::Compact && !self.mouse_tracked {
+                        self.schedule_compact_to_notch();
+                    }
+                } else {
+                    self.cancel_compact_to_notch();
+                    if self.requested_mode == IslandMode::Slim && self.media_state.has_session {
+                        self.requested_mode = IslandMode::Compact;
+                    }
+                }
+                save_config(&self.config);
             }
             UiAction::ToggleAutoHideIdle => {
                 self.config.auto_hide_when_idle = !self.config.auto_hide_when_idle;
@@ -993,6 +1099,7 @@ impl WindowController {
                 }
             }
             UiAction::HideIsland => {
+                self.cancel_compact_to_notch();
                 self.config.visible = false;
                 self.sync_fullscreen_timer();
                 self.update_tray_tooltip();
@@ -1034,6 +1141,7 @@ impl WindowController {
 
     fn shutdown_and_destroy(&mut self) {
         self.cancel_auto_collapse();
+        self.cancel_compact_to_notch();
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_FULLSCREEN_CHECK_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMELINE_TICK_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_STARTUP_UPDATE_ID) };
@@ -1096,6 +1204,7 @@ unsafe extern "system" fn window_proc(
             if let Some(ctrl) = get_controller_mut(hwnd) {
                 match wparam.0 {
                     TIMER_AUTO_COLLAPSE_ID => ctrl.handle_auto_collapse_timer(),
+                    TIMER_COMPACT_TO_NOTCH_ID => ctrl.handle_compact_to_notch_timer(),
                     TIMER_FULLSCREEN_CHECK_ID => ctrl.refresh_fullscreen_state(),
                     TIMER_STARTUP_UPDATE_ID => {
                         let _ = unsafe { KillTimer(Some(hwnd), TIMER_STARTUP_UPDATE_ID) };
@@ -1104,7 +1213,10 @@ unsafe extern "system" fn window_proc(
                     TIMER_TIMELINE_TICK_ID
                         if !ctrl.animator.is_animating()
                             && !ctrl.dragging_timeline
-                            && ctrl.current_effective_mode() == IslandMode::Expanded =>
+                            && matches!(
+                                ctrl.current_effective_mode(),
+                                IslandMode::Expanded | IslandMode::Slim
+                            ) =>
                     {
                         ctrl.render_current_frame();
                     }
@@ -1221,6 +1333,7 @@ unsafe extern "system" fn window_proc(
                 match cmd_id {
                     IDM_TOGGLE_VISIBLE => ctrl.toggle_visibility_from_tray(),
                     IDM_OPEN_SETTINGS => {
+                        ctrl.cancel_compact_to_notch();
                         ctrl.config.visible = true;
                         ctrl.requested_mode = IslandMode::Settings;
                         ctrl.sync_fullscreen_timer();
@@ -1233,9 +1346,16 @@ unsafe extern "system" fn window_proc(
                         ctrl.requested_mode = match ctrl.requested_mode {
                             IslandMode::Expanded | IslandMode::Settings => {
                                 ctrl.cancel_auto_collapse();
-                                ctrl.collapsed_rest_mode()
+                                if ctrl.config.notch_collapse_after_4s
+                                    || !ctrl.media_state.has_session
+                                {
+                                    IslandMode::Slim
+                                } else {
+                                    ctrl.collapsed_rest_mode()
+                                }
                             }
                             _ => {
+                                ctrl.cancel_compact_to_notch();
                                 if !ctrl.mouse_tracked {
                                     ctrl.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
                                 }
@@ -1246,6 +1366,9 @@ unsafe extern "system" fn window_proc(
                         ctrl.apply_target_and_render();
                         ctrl.update_tray_tooltip();
                         save_config(&ctrl.config);
+                    }
+                    IDM_TOGGLE_NOTCH_COLLAPSE => {
+                        ctrl.execute_ui_action(UiAction::ToggleNotchCollapse)
                     }
                     IDM_TOGGLE_AUTO_HIDE => ctrl.execute_ui_action(UiAction::ToggleAutoHideIdle),
                     IDM_TOGGLE_FULLSCREEN => {

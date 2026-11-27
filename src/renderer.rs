@@ -1101,48 +1101,81 @@ impl IslandRenderer {
 
     unsafe fn draw_slim(&mut self, input: &RenderFrameInput<'_>) {
         let p = input.pill;
-        let dot_size = 8.0;
-        let dot_x = p.left + 14.0;
-        let dot_y = p.top + (p.height - dot_size) * 0.5;
-        let dot = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: dot_x,
-                top: dot_y,
-                right: dot_x + dot_size,
-                bottom: dot_y + dot_size,
-            },
-            radiusX: dot_size * 0.5,
-            radiusY: dot_size * 0.5,
-        };
-        let brush = if input.media.has_session {
-            &self.brushes.accent
-        } else {
-            &self.brushes.text_secondary
-        };
+        let art_size = 10.0;
+        let art_x = p.left + 8.0;
+        let art_y = p.top + (p.height - art_size) * 0.5;
         unsafe {
-            self.d2d_context.FillRoundedRectangle(&dot, brush);
+            self.draw_artwork_or_placeholder(
+                art_x,
+                art_y,
+                art_size,
+                art_size * 0.5,
+                input.media.is_playing,
+            );
         }
 
-        let small_left_fmt = self.fonts.small_left.clone();
-        let text_secondary = self.brushes.text_secondary.clone();
-        let text_primary = self.brushes.text_primary.clone();
-        let (label, text_brush) = if input.media.has_session {
-            (input.media.title.as_str(), &text_primary)
-        } else {
-            ("Dynamic Island", &text_secondary)
+        let vis_active =
+            input.config.visualizer_enabled && input.media.has_session && input.media.is_playing;
+        let track_left = art_x + art_size + 7.0;
+        let right_reserve = if vis_active { 25.0 } else { 10.0 };
+        let track_right = (p.left + p.width - right_reserve).max(track_left + 12.0);
+        let track_h = 2.4;
+        let cy = p.top + p.height * 0.5;
+
+        let bg_bar = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: track_left,
+                top: cy - track_h * 0.5,
+                right: track_right,
+                bottom: cy + track_h * 0.5,
+            },
+            radiusX: track_h * 0.5,
+            radiusY: track_h * 0.5,
         };
         unsafe {
-            self.draw_text(
-                label,
-                &small_left_fmt,
-                text_brush,
-                UiRectDip {
-                    left: dot_x + dot_size + 10.0,
-                    top: p.top + 3.0,
-                    right: p.left + p.width - 14.0,
-                    bottom: p.top + p.height - 3.0,
+            self.d2d_context
+                .FillRoundedRectangle(&bg_bar, &self.brushes.switch_off);
+        }
+
+        if input.media.has_session {
+            let track_w = (track_right - track_left).max(1.0);
+            let tl = input.media.timeline;
+            let (fill_w, fill_brush) = if tl.available && tl.duration_ticks() > 0 {
+                let ratio = tl.progress_ratio(
+                    current_windows_filetime_ticks(),
+                    input.media.is_playing,
+                );
+                ((track_w * ratio).max(track_h), &self.brushes.accent)
+            } else {
+                (track_w, &self.brushes.accent_soft)
+            };
+            let fg_bar = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: track_left,
+                    top: cy - track_h * 0.5,
+                    right: (track_left + fill_w).min(track_right),
+                    bottom: cy + track_h * 0.5,
                 },
-            );
+                radiusX: track_h * 0.5,
+                radiusY: track_h * 0.5,
+            };
+            unsafe {
+                self.d2d_context.FillRoundedRectangle(&fg_bar, fill_brush);
+            }
+        }
+
+        if vis_active {
+            unsafe {
+                self.draw_visualizer_bars_sized(
+                    p.left + p.width - 20.0,
+                    cy,
+                    input.visualizer_phase,
+                    2.5,
+                    6.5,
+                    4.0,
+                    2.2,
+                );
+            }
         }
     }
 
@@ -1626,6 +1659,15 @@ impl IslandRenderer {
                 UiAction::BackToMedia => unsafe {
                     self.draw_text("Quay lại", &btn_center_fmt, &accent, hb.rect);
                 },
+                UiAction::ToggleNotchCollapse => unsafe {
+                    self.draw_toggle_tile(
+                        hb.rect,
+                        "Gọn mép 4s",
+                        input.config.notch_collapse_after_4s,
+                        &btn_fmt,
+                        &text_primary,
+                    );
+                },
                 UiAction::ToggleAutoHideIdle => unsafe {
                     self.draw_toggle_tile(
                         hb.rect,
@@ -1878,19 +1920,35 @@ impl IslandRenderer {
     }
 
     unsafe fn draw_visualizer_bars(&self, start_x: f32, center_y: f32, phase: f32) {
+        unsafe {
+            self.draw_visualizer_bars_sized(start_x, center_y, phase, 4.0, 12.0, 5.0, 3.0);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn draw_visualizer_bars_sized(
+        &self,
+        start_x: f32,
+        center_y: f32,
+        phase: f32,
+        min_h: f32,
+        amp_h: f32,
+        step_x: f32,
+        bar_w: f32,
+    ) {
         for i in 0..3 {
             let wave = ((phase + i as f32 * 1.6).sin() * 0.5 + 0.5).clamp(0.2, 1.0);
-            let h = 4.0 + wave * 12.0;
-            let bx = start_x + i as f32 * 5.0;
+            let h = min_h + wave * amp_h;
+            let bx = start_x + i as f32 * step_x;
             let bar = D2D1_ROUNDED_RECT {
                 rect: D2D_RECT_F {
                     left: bx,
                     top: center_y - h * 0.5,
-                    right: bx + 3.0,
+                    right: bx + bar_w,
                     bottom: center_y + h * 0.5,
                 },
-                radiusX: 1.5,
-                radiusY: 1.5,
+                radiusX: bar_w * 0.5,
+                radiusY: bar_w * 0.5,
             };
             unsafe {
                 self.d2d_context
@@ -2732,6 +2790,29 @@ mod tests {
         assert!(renderer.artwork_aura_bitmap.is_some());
         let mut active_media = media.clone();
         active_media.has_session = true;
+        active_media.is_playing = true;
+        active_media.timeline = crate::state::TimelineState {
+            available: true,
+            start_ticks: 0,
+            end_ticks: 100_000_000,
+            base_position_ticks: 45_000_000,
+            last_updated_filetime_ticks: 0,
+        };
+        let slim_active_input = RenderFrameInput {
+            pill: IslandAnimator::new(IslandMode::Slim).current_pill(),
+            mode: IslandMode::Slim,
+            pill_opacity: 1.0,
+            content_alpha: 1.0,
+            config: AppConfig::default(),
+            media: &active_media,
+            hovered_action: None,
+            timeline_scrub_ratio: None,
+            monitor_label: "M1",
+            visualizer_phase: 0.4,
+        };
+        renderer
+            .render(&slim_active_input)
+            .expect("render active Slim Notch");
         let expanded_input = RenderFrameInput {
             pill: IslandAnimator::new(IslandMode::Expanded).current_pill(),
             mode: IslandMode::Expanded,
