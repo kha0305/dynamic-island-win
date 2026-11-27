@@ -1,0 +1,30 @@
+# Rust build artifacts
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# Node / Web UI (if Tauri is chosen)
+node_modules/
+dist/
+build/
+.vite/
+
+# Environment & secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Logs & temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+.idea/
