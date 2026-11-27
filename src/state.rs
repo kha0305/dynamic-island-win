@@ -447,9 +447,9 @@ fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
 
     let timeline_track = UiRectDip {
         left: pill.left + 60.0,
-        top: pill.top + 88.0,
+        top: pill.top + 81.0,
         right: pill.left + pill.width - 60.0,
-        bottom: pill.top + 108.0,
+        bottom: pill.top + 110.0,
     };
 
     let controls_bottom = pill.top + pill.height - 10.0;
@@ -496,6 +496,36 @@ fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
             action: UiAction::MediaNext,
         },
     ]);
+}
+
+/// Mở rộng biên nhận nhấn chuột hai đầu thanh timeline để dễ bắt điểm 0% và 100%.
+pub fn timeline_seek_hit_bounds(track: UiRectDip) -> UiRectDip {
+    UiRectDip {
+        left: track.left - 14.0,
+        top: track.top,
+        right: track.right + 14.0,
+        bottom: track.bottom,
+    }
+}
+
+pub fn timeline_ratio_for_x(track: UiRectDip, x_dip: f32) -> f32 {
+    let width = track.width().max(1.0);
+    ((x_dip - track.left) / width).clamp(0.0, 1.0)
+}
+
+/// Chỉ cho phép thu gọn khi nhấn gọn ở vùng tiêu đề phía trên, tránh trượt tay vùng timeline/nút bấm.
+pub fn should_collapse_expanded_on_blank_click(
+    pill: PillRectDip,
+    down_pos: (f32, f32),
+    up_pos: (f32, f32),
+) -> bool {
+    let dx = up_pos.0 - down_pos.0;
+    let dy = up_pos.1 - down_pos.1;
+    if (dx * dx + dy * dy).sqrt() > 8.0 {
+        return false;
+    }
+    let header_limit_y = pill.top + 80.0;
+    down_pos.1 < header_limit_y && up_pos.1 < header_limit_y
 }
 
 fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
@@ -699,6 +729,9 @@ mod tests {
             assert!(hb.rect.right <= pill.left + pill.width);
             assert!(hb.rect.top >= pill.top);
             assert!(hb.rect.bottom <= pill.top + pill.height);
+            if hb.action == UiAction::SeekTimeline {
+                assert!(hb.rect.height() >= 26.0);
+            }
         }
 
         for i in 0..hitboxes.len() {
@@ -710,6 +743,31 @@ mod tests {
                 assert!(!(overlap_x && overlap_y));
             }
         }
+
+        let tl = hitboxes
+            .iter()
+            .find(|hb| hb.action == UiAction::SeekTimeline)
+            .expect("SeekTimeline")
+            .rect;
+        let grab_bounds = timeline_seek_hit_bounds(tl);
+        assert!(grab_bounds.contains(tl.left - 5.0, tl.top + 10.0));
+        assert_eq!(timeline_ratio_for_x(tl, tl.left - 10.0), 0.0);
+        assert_eq!(timeline_ratio_for_x(tl, tl.right + 10.0), 1.0);
+        assert!(should_collapse_expanded_on_blank_click(
+            pill,
+            (pill.left + 120.0, pill.top + 30.0),
+            (pill.left + 121.0, pill.top + 31.0),
+        ));
+        assert!(!should_collapse_expanded_on_blank_click(
+            pill,
+            (pill.left + 120.0, pill.top + 30.0),
+            (pill.left + 160.0, pill.top + 32.0),
+        ));
+        assert!(!should_collapse_expanded_on_blank_click(
+            pill,
+            (pill.left + 32.0, pill.top + 96.0),
+            (pill.left + 32.0, pill.top + 96.0),
+        ));
     }
 
     #[test]

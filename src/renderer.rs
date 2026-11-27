@@ -89,6 +89,7 @@ pub struct RenderFrameInput<'a> {
     pub config: AppConfig,
     pub media: &'a MediaDisplayState,
     pub hovered_action: Option<UiAction>,
+    pub timeline_scrub_ratio: Option<f32>,
     pub monitor_label: &'a str,
     pub visualizer_phase: f32,
 }
@@ -1268,14 +1269,25 @@ impl IslandRenderer {
 
         let now_ft = current_windows_filetime_ticks();
         let tl = input.media.timeline;
+        let is_scrubbing = input.timeline_scrub_ratio.is_some();
         let (pos_label, dur_label, ratio) = if input.media.has_session && tl.available {
-            let pos = tl.current_position_ticks(now_ft, input.media.is_playing);
             let dur = tl.duration_ticks();
-            (
-                format_duration_ticks(pos),
-                format_duration_ticks(dur),
-                tl.progress_ratio(now_ft, input.media.is_playing),
-            )
+            if let Some(scrub) = input.timeline_scrub_ratio {
+                let clamped = scrub.clamp(0.0, 1.0);
+                let pos = tl.seek_ticks_for_ratio(clamped).unwrap_or(0);
+                (
+                    format_duration_ticks(pos),
+                    format_duration_ticks(dur),
+                    clamped,
+                )
+            } else {
+                let pos = tl.current_position_ticks(now_ft, input.media.is_playing);
+                (
+                    format_duration_ticks(pos),
+                    format_duration_ticks(dur),
+                    tl.progress_ratio(now_ft, input.media.is_playing),
+                )
+            }
         } else {
             (String::from("--:--"), String::from("--:--"), 0.0)
         };
@@ -1287,9 +1299,9 @@ impl IslandRenderer {
                 &text_secondary,
                 UiRectDip {
                     left: p.left + 18.0,
-                    top: p.top + 88.0,
+                    top: p.top + 85.5,
                     right: p.left + 58.0,
-                    bottom: p.top + 108.0,
+                    bottom: p.top + 105.5,
                 },
             );
             self.draw_text(
@@ -1298,9 +1310,9 @@ impl IslandRenderer {
                 &text_secondary,
                 UiRectDip {
                     left: p.left + p.width - 58.0,
-                    top: p.top + 88.0,
+                    top: p.top + 85.5,
                     right: p.left + p.width - 18.0,
-                    bottom: p.top + 108.0,
+                    bottom: p.top + 105.5,
                 },
             );
         }
@@ -1316,7 +1328,8 @@ impl IslandRenderer {
                         hb.rect,
                         ratio,
                         input.media.has_session && tl.available,
-                        hovered,
+                        hovered || is_scrubbing,
+                        is_scrubbing,
                     );
                 }
                 continue;
@@ -1458,8 +1471,15 @@ impl IslandRenderer {
         ratio: f32,
         active: bool,
         hovered: bool,
+        dragging: bool,
     ) {
-        let track_h = if hovered && active { 5.0 } else { 3.5 };
+        let track_h = if dragging && active {
+            6.5
+        } else if hovered && active {
+            5.5
+        } else {
+            4.0
+        };
         let cy = rect.top + rect.height() * 0.5;
         let bg_bar = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
@@ -1497,9 +1517,32 @@ impl IslandRenderer {
                 .FillRoundedRectangle(&fg_bar, &self.brushes.accent);
         }
 
-        let knob_r = if hovered { 5.0 } else { 3.8 };
+        let knob_r = if dragging {
+            6.5
+        } else if hovered {
+            5.5
+        } else {
+            4.0
+        };
         let knob_x = (rect.left + rect.width() * ratio.clamp(0.0, 1.0))
             .clamp(rect.left + knob_r, rect.right - knob_r);
+        if hovered || dragging {
+            let halo_r = knob_r + 3.5;
+            let halo = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: knob_x - halo_r,
+                    top: cy - halo_r,
+                    right: knob_x + halo_r,
+                    bottom: cy + halo_r,
+                },
+                radiusX: halo_r,
+                radiusY: halo_r,
+            };
+            unsafe {
+                self.d2d_context
+                    .FillRoundedRectangle(&halo, &self.brushes.accent_soft);
+            }
+        }
         let knob = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
                 left: knob_x - knob_r,
@@ -2674,6 +2717,7 @@ mod tests {
                 config: AppConfig::default(),
                 media: &media,
                 hovered_action: None,
+                timeline_scrub_ratio: None,
                 monitor_label: "M1",
                 visualizer_phase: 0.4,
             };
@@ -2696,6 +2740,7 @@ mod tests {
             config: AppConfig::default(),
             media: &active_media,
             hovered_action: None,
+            timeline_scrub_ratio: None,
             monitor_label: "M1",
             visualizer_phase: 0.4,
         };

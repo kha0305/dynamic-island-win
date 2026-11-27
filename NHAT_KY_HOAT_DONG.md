@@ -234,8 +234,13 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - Chạy thực tế `.exe` qua 12 giây: mở rộng khi nhấn (`419x163`), tự thu gọn sau 5 giây về `279x39`, tiến trình thứ 2 tự thoát với `DUP_CODE=0`, hoàn tất kiểm tra cập nhật nền không treo modal, `SETTLED_2S_CPU_MS=0`, `WS_MB=47.7`, `PRIV_MB=23.71`, `HANDLES=506`, `NV_MODULES=0`, thoát sạch `CLEAN_EXIT=True` (`EXIT_CODE=0`), `LEFTOVER_PROCS=0`, `EMOJI_HITS=0`.
 - **Trạng thái:** HOÀN TẤT TỰ ĐỘNG CẬP NHẬT & ĐÓNG GÓI MỚI NHẤT
 
+### Mục #013 — Cải tiến kéo trượt Timeline mượt và chống thu nhỏ nhầm (Lỗi #008)
+- **Nguyên nhân:** Chỉ bắt sự kiện `WM_LBUTTONUP` không có `SetCapture`, vùng chạm timeline hẹp (`20 DIP`), và nhấn/nhả hụt bất kỳ khoảng trống nào trong `Expanded` đều tự chuyển về `Compact/Slim`.
+- **Thay đổi:** Mở rộng vùng chạm lên `29 DIP` + `+-14 DIP` hai đầu (`src/state.rs`), cập nhật thanh tua + thời gian tức thời + halo nút kéo khi kéo (`src/renderer.rs`), triển khai `WM_LBUTTONDOWN -> SetCapture -> WM_MOUSEMOVE -> WM_LBUTTONUP -> ReleaseCapture` cùng `WM_MOUSEACTIVATE (MA_NOACTIVATE)` và `should_collapse_expanded_on_blank_click` (`src/window.rs`).
+- **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch, `cargo test --locked` đạt `25/25` (`0.14s`), `cargo build --release --locked` tạo `.exe` `747,008 bytes` / `ZIP` `335,459 bytes`; chạy thử `.exe` xác nhận giữ nguyên `419` khi kéo vượt biên hoặc bấm trượt quanh vùng nút/thời gian, thu gọn về `279` khi bấm vùng tiêu đề, `NV_MODULES=0`, `CLEAN_EXIT=True`. Nâng phiên bản lên `v0.1.1` để đẩy GitHub Release tự động cập nhật.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn thành toàn bộ Phase 1–7 cho bản **v0.1.0** đầy đủ: Liquid Glass đồng màu video, tự thu gọn 5 giây, Single-Instance, Static-CRT Portable (`VCRUNTIME_DEP=False`), Tự động cập nhật GitHub Releases (`WinHTTP` + `SHA-256`) và CI Release Workflow [.github/workflows/release.yml](.github/workflows/release.yml).
+- **Trạng thái hiện tại:** Đã hoàn thành toàn bộ Phase 1–7 cho bản **v0.1.1**: Liquid Glass đồng màu video, kéo mượt Timeline với `SetCapture` + chống thu gọn nhầm, tự thu gọn 5 giây, Single-Instance, Static-CRT Portable (`VCRUNTIME_DEP=False`), Tự động cập nhật GitHub Releases (`WinHTTP` + `SHA-256`) và CI Release Workflow [.github/workflows/release.yml](.github/workflows/release.yml).
 - **Hạng mục cho giai đoạn tiếp theo (v0.2 trong `spec.md`):** Khi người dùng có nhu cầu mở rộng, sẽ tiếp tục lập spec/plan cho HUD âm lượng/pin/CapsLock, File Shelf kéo thả tệp tạm và Pomodoro mini.

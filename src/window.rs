@@ -1,21 +1,24 @@
 use std::mem::size_of;
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, DeleteObject, HGDIOBJ, SetWindowRgn};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
     GetWindowLongPtrW, HCURSOR, IDC_ARROW, IDC_HAND, IDYES, IsWindow, KillTimer, LoadCursorW,
-    MB_ICONERROR, MB_ICONINFORMATION, MB_TOPMOST, MB_YESNO, MessageBoxW, PostQuitMessage,
-    RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW, WM_APP, WM_COMMAND,
-    WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_NCCREATE, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    MA_NOACTIVATE, MB_ICONERROR, MB_ICONINFORMATION, MB_TOPMOST, MB_YESNO, MessageBoxW,
+    PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER,
+    SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW, WM_APP,
+    WM_CAPTURECHANGED, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -24,8 +27,9 @@ use crate::media::{MediaCommand, MediaWorker, WM_APP_MEDIA_UPDATE};
 use crate::renderer::{IslandRenderer, RenderFrameInput};
 use crate::state::{
     AppConfig, IslandAnimator, IslandMode, MediaDisplayState, PixelRect, UiAction, UiHitbox,
-    compute_pill_region_px, compute_surface_size_px, compute_window_origin_px,
+    UiRectDip, compute_pill_region_px, compute_surface_size_px, compute_window_origin_px,
     current_windows_filetime_ticks, effective_mode, fill_interactive_hitboxes,
+    should_collapse_expanded_on_blank_click, timeline_ratio_for_x, timeline_seek_hit_bounds,
 };
 use crate::tray::{
     IDM_CHECK_UPDATE, IDM_EXIT, IDM_MONITOR_BASE, IDM_MONITOR_MAX, IDM_OPEN_SETTINGS,
@@ -53,6 +57,15 @@ const FULLSCREEN_CHECK_INTERVAL_MS: u32 = 800;
 const TIMELINE_TICK_INTERVAL_MS: u32 = 1000;
 const STARTUP_UPDATE_DELAY_MS: u32 = 10_000;
 
+const TIMELINE_SEEK_HOLD_MS: u64 = 850;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaptureChange {
+    None,
+    Acquire,
+    Release,
+}
+
 enum DeferredUpdateModal {
     Info(String),
     Error(String),
@@ -67,6 +80,10 @@ struct WindowController {
     media_state: MediaDisplayState,
     fullscreen_active: bool,
     mouse_tracked: bool,
+    dragging_timeline: bool,
+    timeline_drag_ratio: Option<f32>,
+    pointer_down_pos: Option<(f32, f32)>,
+    seek_hold_until: Option<Instant>,
     hovered_action: Option<UiAction>,
     dpi_scale: f32,
     animator: IslandAnimator,
@@ -178,6 +195,10 @@ impl IslandWindow {
             media_state: MediaDisplayState::default(),
             fullscreen_active: false,
             mouse_tracked: false,
+            dragging_timeline: false,
+            timeline_drag_ratio: None,
+            pointer_down_pos: None,
+            seek_hold_until: None,
             hovered_action: None,
             dpi_scale: active_mon.dpi_scale,
             animator: IslandAnimator::new(initial_mode),
@@ -432,7 +453,25 @@ impl WindowController {
             return;
         };
 
+        let same_track = update.display.has_session
+            && self.media_state.has_session
+            && update.display.title == self.media_state.title
+            && update.display.artist == self.media_state.artist;
+        let preserve_local_timeline = same_track
+            && update.display.timeline.available
+            && (self.dragging_timeline
+                || self
+                    .seek_hold_until
+                    .is_some_and(|until| Instant::now() < until));
+        let prev_timeline = self.media_state.timeline;
         self.media_state = update.display;
+        if preserve_local_timeline {
+            self.media_state.timeline = prev_timeline;
+        } else if !same_track {
+            self.seek_hold_until = None;
+            self.dragging_timeline = false;
+            self.timeline_drag_ratio = None;
+        }
         self.renderer.update_artwork(update.artwork);
 
         if self.media_state.has_session && self.requested_mode == IslandMode::Slim {
@@ -472,6 +511,11 @@ impl WindowController {
             config: self.config,
             media: &self.media_state,
             hovered_action: self.hovered_action,
+            timeline_scrub_ratio: if self.dragging_timeline {
+                self.timeline_drag_ratio
+            } else {
+                None
+            },
             monitor_label: &mon_label,
             visualizer_phase: self.visualizer_phase,
         };
@@ -671,16 +715,7 @@ impl WindowController {
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_AUTO_COLLAPSE_ID) };
     }
 
-    fn handle_auto_collapse_timer(&mut self) {
-        self.cancel_auto_collapse();
-        if !self.mouse_tracked && self.requested_mode == IslandMode::Expanded {
-            self.requested_mode = self.collapsed_rest_mode();
-            self.hovered_action = None;
-            self.apply_target_and_render();
-        }
-    }
-
-    fn handle_mouse_move(&mut self, lparam: LPARAM) {
+    fn ensure_mouse_tracked(&mut self) {
         if !self.mouse_tracked {
             let mut tme = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -692,14 +727,80 @@ impl WindowController {
                 self.mouse_tracked = true;
             }
         }
-        self.cancel_auto_collapse();
+    }
 
+    fn current_timeline_track_rect(&mut self) -> Option<UiRectDip> {
+        if !self.media_state.has_session || !self.media_state.timeline.available {
+            return None;
+        }
+        let pill = self.animator.current_pill();
+        let mode = self.current_effective_mode();
+        fill_interactive_hitboxes(pill, mode, &mut self.hitbox_scratch);
+        self.hitbox_scratch
+            .iter()
+            .find(|hb| hb.action == UiAction::SeekTimeline)
+            .map(|hb| hb.rect)
+    }
+
+    fn handle_auto_collapse_timer(&mut self) {
+        self.cancel_auto_collapse();
+        if !self.mouse_tracked && !self.dragging_timeline && self.requested_mode == IslandMode::Expanded
+        {
+            self.requested_mode = self.collapsed_rest_mode();
+            self.hovered_action = None;
+            self.apply_target_and_render();
+        }
+    }
+
+    fn handle_left_button_down(&mut self, lparam: LPARAM) -> CaptureChange {
+        self.ensure_mouse_tracked();
+        self.cancel_auto_collapse();
+        let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
+        self.pointer_down_pos = Some((x_dip, y_dip));
+
+        if self.current_effective_mode() == IslandMode::Expanded
+            && let Some(track) = self.current_timeline_track_rect()
+            && timeline_seek_hit_bounds(track).contains(x_dip, y_dip)
+        {
+            let ratio = timeline_ratio_for_x(track, x_dip);
+            self.dragging_timeline = true;
+            self.timeline_drag_ratio = Some(ratio);
+            self.hovered_action = Some(UiAction::SeekTimeline);
+            unsafe {
+                SetCursor(Some(self.cursor_hand));
+            }
+            self.render_current_frame();
+            return CaptureChange::Acquire;
+        }
+
+        CaptureChange::None
+    }
+
+    fn handle_mouse_move(&mut self, lparam: LPARAM) {
+        self.cancel_auto_collapse();
+        let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
+
+        if self.dragging_timeline {
+            if let Some(track) = self.current_timeline_track_rect() {
+                let ratio = timeline_ratio_for_x(track, x_dip);
+                if self.timeline_drag_ratio != Some(ratio) {
+                    self.timeline_drag_ratio = Some(ratio);
+                    self.hovered_action = Some(UiAction::SeekTimeline);
+                    unsafe {
+                        SetCursor(Some(self.cursor_hand));
+                    }
+                    self.render_current_frame();
+                }
+            }
+            return;
+        }
+
+        self.ensure_mouse_tracked();
         if self.requested_mode == IslandMode::Slim {
             self.requested_mode = IslandMode::Compact;
             self.apply_target_and_render();
         }
 
-        let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
         let next_hover = self.hit_test_action(x_dip, y_dip);
         if next_hover != self.hovered_action {
             self.hovered_action = next_hover;
@@ -718,6 +819,9 @@ impl WindowController {
     }
 
     fn handle_mouse_leave(&mut self) {
+        if self.dragging_timeline {
+            return;
+        }
         self.mouse_tracked = false;
         let hover_changed = self.hovered_action.take().is_some();
         if self.requested_mode == IslandMode::Compact && !self.media_state.has_session {
@@ -733,15 +837,70 @@ impl WindowController {
         }
     }
 
-    fn handle_left_click(&mut self, lparam: LPARAM) {
+    fn handle_capture_changed(&mut self) {
+        if !self.dragging_timeline {
+            return;
+        }
+        self.dragging_timeline = false;
+        self.timeline_drag_ratio = None;
+        self.pointer_down_pos = None;
+        self.mouse_tracked = false;
+        self.hovered_action = None;
+        if self.requested_mode == IslandMode::Expanded {
+            self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+        }
+        self.render_current_frame();
+    }
+
+    fn handle_left_button_up(&mut self, lparam: LPARAM) -> (CaptureChange, bool) {
         let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
+        let down_pos = self.pointer_down_pos.take();
+
+        if self.dragging_timeline {
+            self.dragging_timeline = false;
+            let fallback_ratio = self.timeline_drag_ratio.take().unwrap_or(0.0);
+            let ratio = self
+                .current_timeline_track_rect()
+                .map_or(fallback_ratio, |track| timeline_ratio_for_x(track, x_dip));
+            self.commit_timeline_seek_ratio(ratio);
+
+            let pill = self.animator.current_pill();
+            let inside_pill = x_dip >= pill.left
+                && x_dip <= pill.left + pill.width
+                && y_dip >= pill.top
+                && y_dip <= pill.top + pill.height;
+            self.mouse_tracked = false;
+            if inside_pill {
+                self.hovered_action = self.hit_test_action(x_dip, y_dip);
+                self.cancel_auto_collapse();
+            } else {
+                self.hovered_action = None;
+                if self.requested_mode == IslandMode::Expanded {
+                    self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+                }
+            }
+            self.render_current_frame();
+            return (CaptureChange::Release, inside_pill);
+        }
+
         if let Some(action) = self.hit_test_action(x_dip, y_dip) {
             if action == UiAction::SeekTimeline {
                 self.handle_timeline_seek(x_dip);
-                return;
+                return (CaptureChange::None, false);
             }
             self.execute_ui_action(action);
-            return;
+            return (CaptureChange::None, false);
+        }
+
+        if self.requested_mode == IslandMode::Expanded {
+            let pill = self.animator.current_pill();
+            if !should_collapse_expanded_on_blank_click(
+                pill,
+                down_pos.unwrap_or((x_dip, y_dip)),
+                (x_dip, y_dip),
+            ) {
+                return (CaptureChange::None, false);
+            }
         }
 
         self.requested_mode = match self.requested_mode {
@@ -758,31 +917,31 @@ impl WindowController {
         }
         self.hovered_action = None;
         self.apply_target_and_render();
+        (CaptureChange::None, false)
     }
 
-    fn handle_timeline_seek(&mut self, x_dip: f32) {
-        if !self.media_state.has_session || !self.media_state.timeline.available {
-            return;
-        }
-        let Some(track) = self
-            .hitbox_scratch
-            .iter()
-            .find(|hb| hb.action == UiAction::SeekTimeline)
-            .map(|hb| hb.rect)
+    fn commit_timeline_seek_ratio(&mut self, ratio: f32) {
+        let Some(target_ticks) = self
+            .media_state
+            .timeline
+            .seek_ticks_for_ratio(ratio.clamp(0.0, 1.0))
         else {
             return;
         };
-        let width = track.width().max(1.0);
-        let ratio = ((x_dip - track.left) / width).clamp(0.0, 1.0);
-        let Some(target_ticks) = self.media_state.timeline.seek_ticks_for_ratio(ratio) else {
-            return;
-        };
-
         self.media_state.timeline.base_position_ticks = target_ticks;
         self.media_state.timeline.last_updated_filetime_ticks = current_windows_filetime_ticks();
+        self.seek_hold_until = Some(Instant::now() + Duration::from_millis(TIMELINE_SEEK_HOLD_MS));
         if let Some(worker) = &self.media_worker {
             worker.send_command(MediaCommand::Seek(target_ticks));
         }
+    }
+
+    fn handle_timeline_seek(&mut self, x_dip: f32) {
+        let Some(track) = self.current_timeline_track_rect() else {
+            return;
+        };
+        let ratio = timeline_ratio_for_x(track, x_dip);
+        self.commit_timeline_seek_ratio(ratio);
         self.render_current_frame();
     }
 
@@ -944,6 +1103,7 @@ unsafe extern "system" fn window_proc(
                     }
                     TIMER_TIMELINE_TICK_ID
                         if !ctrl.animator.is_animating()
+                            && !ctrl.dragging_timeline
                             && ctrl.current_effective_mode() == IslandMode::Expanded =>
                     {
                         ctrl.render_current_frame();
@@ -953,9 +1113,10 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_SETCURSOR => {
             if let Some(ctrl) = get_controller_mut(hwnd) {
-                let cursor = if ctrl.hovered_action.is_some() {
+                let cursor = if ctrl.dragging_timeline || ctrl.hovered_action.is_some() {
                     ctrl.cursor_hand
                 } else {
                     ctrl.cursor_arrow
@@ -979,9 +1140,36 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            let capture = get_controller_mut(hwnd)
+                .map_or(CaptureChange::None, |ctrl| ctrl.handle_left_button_down(lparam));
+            if capture == CaptureChange::Acquire {
+                unsafe {
+                    let _ = SetCapture(hwnd);
+                }
+            }
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
+            let (capture, rearm_track) = get_controller_mut(hwnd).map_or(
+                (CaptureChange::None, false),
+                |ctrl| ctrl.handle_left_button_up(lparam),
+            );
+            if capture == CaptureChange::Release {
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                if rearm_track
+                    && let Some(ctrl) = get_controller_mut(hwnd)
+                {
+                    ctrl.ensure_mouse_tracked();
+                }
+            }
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
             if let Some(ctrl) = get_controller_mut(hwnd) {
-                ctrl.handle_left_click(lparam);
+                ctrl.handle_capture_changed();
             }
             LRESULT(0)
         }
