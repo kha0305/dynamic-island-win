@@ -248,8 +248,17 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - `src/window.rs`: Thêm `TIMER_COMPACT_TO_NOTCH_ID` (4 giây) bung `Compact` 4s khi có bài mới rồi thu về `Slim` Notch, hủy timer khi rê chuột chạm dải Notch và tiếp tục giữ `0%` CPU khi tạm dừng.
 - **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch, `cargo test --locked` đạt `26/26` (`0.13s`), `cargo build --release --locked` biên dịch [target/release/win-dynamic-island.exe](target/release/win-dynamic-island.exe) (`753,152 bytes` trước khi nâng tag `0.1.2`), `EMOJI_HITS=0`; nâng phiên bản `v0.1.2` và đẩy GitHub Releases (giữ nguyên `dist\win-dynamic-island.exe` `v0.1.1` theo yêu cầu người dùng để thử tự cập nhật).
 
+### Mục #015 — Cân bằng kính khói tối chống lóa trên nền cửa sổ trắng sáng (Lỗi #009)
+- **Nguyên nhân:** Khi mở `Settings` hoặc ở chế độ không dùng aura video (`Slim`/chờ), `draw_pill_shell` hạ `glass_fill` xuống `0.17..0.26` trong khi `glass_sheen` phủ `0.34` trắng và `ambient_glow_brush` giữ mức phát sáng media trên nền trắng `#FFFFFF`, khiến kính bị bạc lóa và làm nhạt chữ/thẻ cài đặt/`Thoát ứng dụng`.
+- **Thay đổi trong [src/renderer.rs](src/renderer.rs):**
+  - Cân chỉnh `glass_fill` thành kính khói tối `0.62..0.72` (giữ đầy đủ `opacity` khi `!has_video_aura`, `opacity * 0.78` khi có aura kết hợp hạ trần sáng aura `0.78 -> 0.64`).
+  - Giảm lớp phủ trắng `glass_sheen` (`0.34 -> 0.11`), dịu viền `glass_border`/`glass_inner_rim`, tăng `glass_edge_shadow` (`0.34`, dày `2.0 DIP`) để tạo ranh giới rõ trên nền trắng, và giảm `ambient_glow_brush` còn `0.24` khi không hiện aura video.
+  - Làm đầm thẻ `surface_card` (`0.50` kèm viền `card_border`), rãnh `switch_off` (`0.54`) và nút `danger_bg` đỏ trầm (`0.58, 0.10, 0.13, 0.64`).
+  - Bổ sung unit test `smoked_glass_preserves_translucency_and_contrast_over_white` đọc lại pixel trực tiếp từ GPU D2D (`CPU_READ`).
+- **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch, `cargo test --locked` đạt `27/27` (`0.19s`, đọc pixel giả lập trên `#FFFFFF` cho `glass a=0.651` với độ tương phản chữ trắng `5.85:1`, `card=0.239..0.271`, `exit red=0.486 vs green=0.176`), `cargo build --release --locked` biên dịch `target/release/win-dynamic-island.exe` (`753,152 bytes`, nâng phiên bản lên `v0.1.3`), đồng bộ `dist\WinDynamicIsland-win64.zip` (`336,814 bytes`), `EMOJI_HITS=0`.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn thành toàn bộ Phase 1–7 cho bản **v0.1.2** (`tab-safe-notch` `152 x 16 DIP` tại `y = 0` + tự thu sau 4 giây, giữ nguyên hiệu ứng Liquid Glass, kéo mượt Timeline, Single-Instance, Static-CRT Portable `VCRUNTIME_DEP=False` và Tự cập nhật GitHub Releases).
-- **Hạng mục cho giai đoạn tiếp theo (v0.2 trong `spec.md`):** Phát hành `v0.1.2` lên GitHub nếu người dùng muốn thử tự cập nhật ngay từ `v0.1.1`, hoặc tiếp tục HUD âm lượng/pin/CapsLock, File Shelf kéo thả tệp tạm và Pomodoro mini.
+- **Trạng thái hiện tại:** Đã chốt phát hành bản **v0.1.3** (gồm toàn bộ tính năng `v0.1.2` + sửa Lỗi #009 cân bằng kính khói tối chống lóa trên nền trắng), đóng gói bộ cài portable trong `dist/` và đẩy mã nguồn/tag `v0.1.3` lên GitHub Releases.
+- **Hạng mục cho giai đoạn tiếp theo (v0.2 trong `spec.md`):** Tiếp tục chọn tính năng mới như HUD âm lượng/pin/CapsLock, chuyển nhanh thiết bị âm thanh, File Shelf kéo thả tệp tạm hoặc Pomodoro mini.

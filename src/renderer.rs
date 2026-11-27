@@ -104,6 +104,7 @@ struct BrushPalette {
     glass_edge_shadow: ID2D1SolidColorBrush,
     surface_card: ID2D1SolidColorBrush,
     surface_hover: ID2D1SolidColorBrush,
+    card_border: ID2D1SolidColorBrush,
     text_primary: ID2D1SolidColorBrush,
     text_secondary: ID2D1SolidColorBrush,
     text_shadow: ID2D1SolidColorBrush,
@@ -710,7 +711,7 @@ impl IslandRenderer {
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
 
         let brushes = create_brushes(&d2d_context)?;
-        let ambient_glow_brush = create_ambient_glow_brush(&d2d_context, [0.24, 0.72, 0.98], 0.14)?;
+        let ambient_glow_brush = create_ambient_glow_brush(&d2d_context, [0.32, 0.80, 1.0], 0.14)?;
         let fonts = create_text_formats(&dwrite_factory)?;
         let icons = create_icon_geometries(&d2d_factory)?;
 
@@ -770,7 +771,7 @@ impl IslandRenderer {
                 self.artwork_bitmap = None;
                 self.artwork_aura_bitmap = None;
                 self.artwork_size_px = (0, 0);
-                self.apply_media_theme_colors([0.24, 0.78, 1.0], 0.14);
+                self.apply_media_theme_colors([0.38, 0.85, 1.0], 0.14);
             }
             ArtworkUpdate::Set(art) => {
                 let sz = (art.width, art.height);
@@ -964,10 +965,10 @@ impl IslandRenderer {
             }
 
             if has_video_aura && let Some(aura_bmp) = &self.artwork_aura_bitmap {
-                // Giữ lớp nền tối mờ vừa đủ (~0.24-0.34) để nền trắng không tẩy nhạt màu video.
+                // Giữ lớp nền khói tối đủ đầm (~0.48-0.56) dưới aura để nền trắng không tẩy nhạt màu video.
                 self.brushes.glass_fill.SetStartPoint(start);
                 self.brushes.glass_fill.SetEndPoint(end);
-                self.brushes.glass_fill.SetOpacity(opacity);
+                self.brushes.glass_fill.SetOpacity(opacity * 0.78);
                 self.d2d_context
                     .FillRoundedRectangle(&rounded, &self.brushes.glass_fill);
 
@@ -980,7 +981,7 @@ impl IslandRenderer {
                         geometricMask: ManuallyDrop::new(Some(geom_base)),
                         maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                         maskTransform: Matrix3x2::identity(),
-                        opacity: opacity * 0.62,
+                        opacity: opacity * 0.54,
                         opacityBrush: ManuallyDrop::new(None),
                         layerOptions: D2D1_LAYER_OPTIONS1_NONE,
                     };
@@ -999,19 +1000,21 @@ impl IslandRenderer {
                     self.d2d_context.PopLayer();
                 }
             } else {
+                // Giữ độ đầm kính khói tối đầy đủ khi không có aura (Settings/Slim/chờ) để tránh lóa trên nền trắng.
                 self.brushes.glass_fill.SetStartPoint(start);
                 self.brushes.glass_fill.SetEndPoint(end);
-                self.brushes.glass_fill.SetOpacity(opacity * 0.72);
+                self.brushes.glass_fill.SetOpacity(opacity);
                 self.d2d_context
                     .FillRoundedRectangle(&rounded, &self.brushes.glass_fill);
             }
 
+            let glow_scale = if has_video_aura { 1.0 } else { 0.24 };
             self.ambient_glow_brush.SetCenter(glow_center);
             self.ambient_glow_brush
                 .SetRadiusX((pill.width * 0.62).max(40.0));
             self.ambient_glow_brush
                 .SetRadiusY((pill.height * 0.96).max(24.0));
-            self.ambient_glow_brush.SetOpacity(opacity);
+            self.ambient_glow_brush.SetOpacity(opacity * glow_scale);
             self.d2d_context
                 .FillRoundedRectangle(&rounded, &self.ambient_glow_brush);
 
@@ -1035,7 +1038,7 @@ impl IslandRenderer {
             self.d2d_context.DrawRoundedRectangle(
                 &rounded,
                 &self.brushes.glass_edge_shadow,
-                1.8,
+                2.0,
                 None,
             );
 
@@ -1652,6 +1655,13 @@ impl IslandRenderer {
                         1.0,
                         None,
                     );
+                } else {
+                    self.d2d_context.DrawRoundedRectangle(
+                        &card,
+                        &self.brushes.card_border,
+                        0.85,
+                        None,
+                    );
                 }
             }
 
@@ -2183,8 +2193,8 @@ fn build_ambient_aura_bgra(art: &DecodedArtwork) -> ([u8; 16 * 10 * 4], u32, u32
         let mut g = vib(rgb[1]);
         let mut b = vib(rgb[2]);
         let peak = r.max(g).max(b);
-        if peak > 0.78 {
-            let scale = 0.78 / peak;
+        if peak > 0.64 {
+            let scale = 0.64 / peak;
             r *= scale;
             g *= scale;
             b *= scale;
@@ -2320,28 +2330,28 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
             D2D1_GRADIENT_STOP {
                 position: 0.0,
                 color: D2D1_COLOR_F {
-                    r: 0.04,
-                    g: 0.055,
-                    b: 0.09,
-                    a: 0.24,
+                    r: 0.030,
+                    g: 0.038,
+                    b: 0.060,
+                    a: 0.62,
                 },
             },
             D2D1_GRADIENT_STOP {
                 position: 0.45,
                 color: D2D1_COLOR_F {
-                    r: 0.025,
-                    g: 0.035,
-                    b: 0.06,
-                    a: 0.30,
+                    r: 0.020,
+                    g: 0.026,
+                    b: 0.044,
+                    a: 0.67,
                 },
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
                 color: D2D1_COLOR_F {
-                    r: 0.015,
-                    g: 0.022,
-                    b: 0.04,
-                    a: 0.36,
+                    r: 0.012,
+                    g: 0.016,
+                    b: 0.030,
+                    a: 0.72,
                 },
             },
         ],
@@ -2353,23 +2363,23 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
             D2D1_GRADIENT_STOP {
                 position: 0.0,
                 color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 0.34,
-                },
-            },
-            D2D1_GRADIENT_STOP {
-                position: 0.24,
-                color: D2D1_COLOR_F {
                     r: 0.92,
                     g: 0.96,
                     b: 1.0,
-                    a: 0.08,
+                    a: 0.11,
                 },
             },
             D2D1_GRADIENT_STOP {
-                position: 0.54,
+                position: 0.16,
+                color: D2D1_COLOR_F {
+                    r: 0.90,
+                    g: 0.95,
+                    b: 1.0,
+                    a: 0.02,
+                },
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.50,
                 color: D2D1_COLOR_F {
                     r: 1.0,
                     g: 1.0,
@@ -2378,21 +2388,21 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
                 },
             },
             D2D1_GRADIENT_STOP {
-                position: 0.84,
+                position: 0.86,
                 color: D2D1_COLOR_F {
                     r: 0.88,
                     g: 0.94,
                     b: 1.0,
-                    a: 0.025,
+                    a: 0.01,
                 },
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
                 color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
+                    r: 0.92,
+                    g: 0.96,
                     b: 1.0,
-                    a: 0.14,
+                    a: 0.05,
                 },
             },
         ],
@@ -2404,10 +2414,10 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
             D2D1_GRADIENT_STOP {
                 position: 0.0,
                 color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
+                    r: 0.96,
+                    g: 0.98,
                     b: 1.0,
-                    a: 0.86,
+                    a: 0.54,
                 },
             },
             D2D1_GRADIENT_STOP {
@@ -2416,7 +2426,7 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
                     r: 0.90,
                     g: 0.96,
                     b: 1.0,
-                    a: 0.30,
+                    a: 0.20,
                 },
             },
             D2D1_GRADIENT_STOP {
@@ -2425,16 +2435,16 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
                     r: 0.85,
                     g: 0.93,
                     b: 1.0,
-                    a: 0.24,
+                    a: 0.16,
                 },
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
                 color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
+                    r: 0.94,
+                    g: 0.97,
                     b: 1.0,
-                    a: 0.58,
+                    a: 0.38,
                 },
             },
         ],
@@ -2446,10 +2456,10 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
             D2D1_GRADIENT_STOP {
                 position: 0.0,
                 color: D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
+                    r: 0.95,
+                    g: 0.98,
                     b: 1.0,
-                    a: 0.24,
+                    a: 0.14,
                 },
             },
             D2D1_GRADIENT_STOP {
@@ -2467,32 +2477,33 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
                     r: 0.84,
                     g: 0.94,
                     b: 1.0,
-                    a: 0.16,
+                    a: 0.09,
                 },
             },
         ],
     )?;
 
     Ok(BrushPalette {
-        bg: make(0.048, 0.054, 0.072, 0.86)?,
-        border: make(1.0, 1.0, 1.0, 0.32)?,
+        bg: make(0.048, 0.054, 0.072, 0.88)?,
+        border: make(1.0, 1.0, 1.0, 0.28)?,
         glass_fill,
         glass_sheen,
         glass_border,
         glass_inner_rim,
-        glass_edge_shadow: make(0.03, 0.04, 0.08, 0.16)?,
-        surface_card: make(0.04, 0.05, 0.09, 0.36)?,
-        surface_hover: make(0.08, 0.11, 0.18, 0.50)?,
+        glass_edge_shadow: make(0.02, 0.03, 0.06, 0.34)?,
+        surface_card: make(0.045, 0.058, 0.095, 0.50)?,
+        surface_hover: make(0.10, 0.135, 0.21, 0.64)?,
+        card_border: make(1.0, 1.0, 1.0, 0.09)?,
         text_primary: make(0.99, 0.99, 1.0, 1.0)?,
         text_secondary: make(0.92, 0.95, 1.0, 0.96)?,
-        text_shadow: make(0.02, 0.03, 0.06, 0.44)?,
-        accent: make(0.32, 0.80, 1.0, 1.0)?,
-        accent_soft: make(0.14, 0.42, 0.62, 0.48)?,
-        switch_off: make(0.03, 0.04, 0.08, 0.42)?,
+        text_shadow: make(0.01, 0.015, 0.03, 0.56)?,
+        accent: make(0.38, 0.85, 1.0, 1.0)?,
+        accent_soft: make(0.14, 0.42, 0.62, 0.54)?,
+        switch_off: make(0.19, 0.23, 0.31, 0.54)?,
         knob: make(0.99, 0.99, 1.0, 1.0)?,
-        danger_bg: make(0.85, 0.20, 0.22, 0.32)?,
-        danger_hover: make(0.92, 0.26, 0.26, 0.50)?,
-        danger_border: make(0.98, 0.50, 0.50, 0.60)?,
+        danger_bg: make(0.58, 0.10, 0.13, 0.64)?,
+        danger_hover: make(0.74, 0.15, 0.18, 0.78)?,
+        danger_border: make(0.96, 0.44, 0.46, 0.56)?,
         art_bg: make(0.10, 0.12, 0.18, 0.75)?,
     })
 }
@@ -2687,6 +2698,9 @@ fn read_adapter_name(adapter: &IDXGIAdapter1) -> String {
 mod tests {
     use super::*;
     use crate::state::IslandAnimator;
+    use windows::Win32::Graphics::Direct2D::{
+        D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_MAP_OPTIONS_READ,
+    };
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -2868,5 +2882,189 @@ mod tests {
 
         let accent = boost_accent_for_readability(extract_vibrant_accent_rgb(&art.bgra));
         assert!(accent.iter().copied().fold(0.0_f32, f32::max) >= 0.70);
+
+        let white_art = DecodedArtwork {
+            width: 8,
+            height: 8,
+            bgra: [255, 255, 255, 255].repeat(64),
+        };
+        let (white_aura, _, _) = build_ambient_aura_bgra(&white_art);
+        assert!(
+            white_aura[2] <= 168 && white_aura[1] <= 168 && white_aura[0] <= 168,
+            "Aura từ ảnh trắng phải được hãm sáng để không tẩy nhạt chữ: {:?}",
+            &white_aura[0..4]
+        );
+    }
+
+    #[test]
+    fn smoked_glass_preserves_translucency_and_contrast_over_white() {
+        fn srgb_to_rel_lum(r: f32, g: f32, b: f32) -> f32 {
+            let lin = |c: f32| {
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        }
+
+        struct ComGuard(bool);
+        impl Drop for ComGuard {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe { CoUninitialize() };
+                }
+            }
+        }
+
+        let _com = ComGuard(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok());
+        let hinstance = unsafe { GetModuleHandleW(None) }.expect("GetModuleHandleW");
+        let class_name = to_wide_null("STATIC");
+        let title = to_wide_null("ContrastTestWindow");
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP | WS_EX_NOACTIVATE,
+                PCWSTR(class_name.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                WS_POPUP,
+                0,
+                0,
+                444,
+                260,
+                None,
+                None,
+                Some(hinstance.into()),
+                None,
+            )
+        }
+        .expect("CreateWindowExW");
+
+        let mut renderer = IslandRenderer::new(hwnd, 1.0).expect("IslandRenderer::new");
+        let size_px = compute_surface_size_px(1.0);
+        let bmp_size = D2D_SIZE_U {
+            width: size_px.0 as u32,
+            height: size_px.1 as u32,
+        };
+        let target_props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
+            ..Default::default()
+        };
+        let gpu_bmp = unsafe {
+            renderer
+                .d2d_context
+                .CreateBitmap(bmp_size, None, 0, &target_props)
+        }
+        .expect("Create offscreen target bitmap");
+        let target_img: ID2D1Image = gpu_bmp.cast().expect("ID2D1Image");
+        let pill = IslandAnimator::new(IslandMode::Settings).current_pill();
+        let media = MediaDisplayState::default();
+        let input = RenderFrameInput {
+            pill,
+            mode: IslandMode::Settings,
+            pill_opacity: 1.0,
+            content_alpha: 1.0,
+            config: AppConfig::default(),
+            media: &media,
+            hovered_action: None,
+            timeline_scrub_ratio: None,
+            monitor_label: "1 - Chính",
+            visualizer_phase: 0.0,
+        };
+        let clear = D2D1_COLOR_F {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        unsafe {
+            renderer.d2d_context.SetTarget(&target_img);
+            renderer.d2d_context.BeginDraw();
+            renderer.d2d_context.Clear(Some(&clear));
+            renderer.draw_pill_shell(pill, 1.0, true, false);
+            renderer.draw_clipped_contents(&input);
+            renderer.d2d_context.EndDraw(None, None).expect("EndDraw");
+        }
+
+        let cpu_props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            ..Default::default()
+        };
+        let cpu_bmp = unsafe {
+            renderer
+                .d2d_context
+                .CreateBitmap(bmp_size, None, 0, &cpu_props)
+        }
+        .expect("Create CPU_READ bitmap");
+        let src_bmp: ID2D1Bitmap = gpu_bmp.cast().expect("ID2D1Bitmap");
+        unsafe {
+            cpu_bmp
+                .CopyFromBitmap(None, &src_bmp, None)
+                .expect("CopyFromBitmap");
+        }
+        let mapped = unsafe { cpu_bmp.Map(D2D1_MAP_OPTIONS_READ) }.expect("Map");
+        let pitch = mapped.pitch as usize;
+        let total_bytes = pitch * bmp_size.height as usize;
+        let buf = unsafe { std::slice::from_raw_parts(mapped.bits, total_bytes) };
+
+        let sample_over_white = |x_f: f32, y_f: f32| -> (f32, f32, f32, f32) {
+            let x = (x_f.round() as usize).min(bmp_size.width as usize - 1);
+            let y = (y_f.round() as usize).min(bmp_size.height as usize - 1);
+            let off = y * pitch + x * 4;
+            let b_p = buf[off] as f32 / 255.0;
+            let g_p = buf[off + 1] as f32 / 255.0;
+            let r_p = buf[off + 2] as f32 / 255.0;
+            let a = buf[off + 3] as f32 / 255.0;
+            // Hòa trộn PREMULTIPLIED lên nền trắng thuần (1.0, 1.0, 1.0)
+            (r_p + (1.0 - a), g_p + (1.0 - a), b_p + (1.0 - a), a)
+        };
+
+        let glass = sample_over_white(pill.left + pill.width * 0.5, pill.top + 41.0);
+        let card = sample_over_white(pill.left + pill.width - 20.0, pill.top + 15.0);
+        let exit = sample_over_white(pill.left + pill.width - 24.0, pill.top + pill.height - 14.0);
+
+        unsafe {
+            let _ = cpu_bmp.Unmap();
+        }
+        renderer.hide_backdrop();
+        drop(renderer);
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+
+        let glass_contrast = (1.0 + 0.05) / (srgb_to_rel_lum(glass.0, glass.1, glass.2) + 0.05);
+        println!(
+            "Over pure #FFFFFF -> glass={glass:?} (contrast={glass_contrast:.2}:1), card={card:?}, exit={exit:?}"
+        );
+
+        assert!(
+            glass.3 >= 0.55 && glass.3 <= 0.80,
+            "Kính phải giữ độ xuyên sáng vừa phải (0.55..0.80), hiện tại: {:.3}",
+            glass.3
+        );
+        assert!(
+            glass_contrast >= 4.5,
+            "Độ tương phản chữ trắng trên kính đặt lên nền #FFFFFF phải >= 4.5:1, hiện tại: {glass_contrast:.2}"
+        );
+        assert!(
+            card.0 <= 0.32 && card.1 <= 0.34 && card.2 <= 0.38,
+            "Thẻ cài đặt trên nền trắng phải đầm tối, không tẩy xám sáng: {card:?}"
+        );
+        assert!(
+            exit.0 > exit.1 * 1.45 && exit.0 <= 0.62,
+            "Nút Thoát ứng dụng trên nền trắng phải giữ đỏ trầm, không bạc hồng: {exit:?}"
+        );
     }
 }
