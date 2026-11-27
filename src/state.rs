@@ -7,17 +7,46 @@ pub enum IslandMode {
     Compact,
     Expanded,
     Settings,
+    AudioDevices,
+    Notice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    Checking,
+    UpToDate,
+    UpdateAvailable,
+    Downloading,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IslandNoticeView<'a> {
+    pub kind: NoticeKind,
+    pub title: &'a str,
+    pub message: &'a str,
+    pub primary_label: &'a str,
+    pub secondary_label: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiAction {
     OpenSettings,
+    OpenAudioDevices,
+    SelectAudioDevice(usize),
+    NoticePrimary,
+    NoticeSecondary,
     BackToMedia,
     MediaPrev,
     MediaPlayPause,
     MediaNext,
     SeekTimeline,
+    SeekVolume,
+    ToggleVolumeMute,
     ToggleNotchCollapse,
+    ToggleHudVolume,
+    ToggleHudWheel,
+    ToggleHudPower,
     ToggleAutoHideIdle,
     ToggleAutoHideFullscreen,
     ToggleVisualizer,
@@ -25,6 +54,20 @@ pub enum UiAction {
     CycleMonitor,
     HideIsland,
     ExitApp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HudContent {
+    Volume {
+        level: f32,
+        muted: bool,
+        show_device_name: bool,
+    },
+    Power {
+        on_ac: bool,
+        percent: Option<u8>,
+        low_battery: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,6 +194,9 @@ impl Default for MediaDisplayState {
 pub struct AppConfig {
     pub visible: bool,
     pub notch_collapse_after_4s: bool,
+    pub hud_volume_enabled: bool,
+    pub hud_wheel_enabled: bool,
+    pub hud_power_enabled: bool,
     pub auto_hide_when_idle: bool,
     pub auto_hide_fullscreen: bool,
     pub visualizer_enabled: bool,
@@ -163,6 +209,9 @@ impl Default for AppConfig {
         Self {
             visible: true,
             notch_collapse_after_4s: true,
+            hud_volume_enabled: true,
+            hud_wheel_enabled: true,
+            hud_power_enabled: true,
             auto_hide_when_idle: false,
             auto_hide_fullscreen: true,
             visualizer_enabled: true,
@@ -174,8 +223,9 @@ impl Default for AppConfig {
 
 /// Kích thước cố định tối đa của bề mặt SwapChain (DIP) đủ chứa biên nảy lò xo ở chế độ Settings.
 pub const MAX_SURFACE_WIDTH_DIP: f32 = 464.0;
-pub const MAX_SURFACE_HEIGHT_DIP: f32 = 264.0;
+pub const MAX_SURFACE_HEIGHT_DIP: f32 = 336.0;
 pub const TOP_MARGIN_DIP: f32 = 6.0;
+pub const MAX_AUDIO_DEVICES_VISIBLE: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PillRectDip {
@@ -198,7 +248,10 @@ pub fn target_top_for_mode(mode: IslandMode) -> f32 {
     match mode {
         IslandMode::Hidden | IslandMode::Slim => 0.0,
         IslandMode::Compact => 2.0,
-        IslandMode::Expanded | IslandMode::Settings => TOP_MARGIN_DIP,
+        IslandMode::Expanded
+        | IslandMode::Settings
+        | IslandMode::AudioDevices
+        | IslandMode::Notice => TOP_MARGIN_DIP,
     }
 }
 
@@ -206,9 +259,11 @@ pub fn target_dimensions_for_mode(mode: IslandMode) -> (f32, f32, f32, f32) {
     match mode {
         IslandMode::Hidden => (116.0, 4.0, 2.0, 0.0),
         IslandMode::Slim => (152.0, 16.0, 8.0, 1.0),
-        IslandMode::Compact => (276.0, 36.0, 18.0, 1.0),
+        IslandMode::Compact => (316.0, 40.0, 20.0, 1.0),
         IslandMode::Expanded => (416.0, 160.0, 28.0, 1.0),
-        IslandMode::Settings => (424.0, 232.0, 26.0, 1.0),
+        IslandMode::Settings => (424.0, 298.0, 26.0, 1.0),
+        IslandMode::AudioDevices => (424.0, 284.0, 26.0, 1.0),
+        IslandMode::Notice => (416.0, 136.0, 26.0, 1.0),
     }
 }
 
@@ -217,12 +272,16 @@ pub fn effective_mode(
     config: AppConfig,
     fullscreen_active: bool,
     has_media: bool,
+    hud_active: bool,
 ) -> IslandMode {
     if !config.visible {
         return IslandMode::Hidden;
     }
     if config.auto_hide_fullscreen && fullscreen_active {
         return IslandMode::Hidden;
+    }
+    if hud_active && matches!(requested, IslandMode::Slim | IslandMode::Compact) {
+        return IslandMode::Compact;
     }
     if config.auto_hide_when_idle && !has_media && requested == IslandMode::Slim {
         return IslandMode::Hidden;
@@ -257,18 +316,18 @@ impl SpringScalar {
     }
 
     pub fn is_settled(&self) -> bool {
-        (self.target - self.value).abs() < 0.08 && self.velocity.abs() < 0.25
+        (self.target - self.value).abs() < 0.12 && self.velocity.abs() < 0.45
     }
 
     /// Cập nhật lò xo tắt dần với bước con cố định để bảo toàn ổn định ở mọi tần số quét.
     pub fn step(&mut self, dt_sec: f32, stiffness: f32, damping: f32) -> bool {
-        let clamped_dt = dt_sec.clamp(0.0, 0.05);
+        let clamped_dt = dt_sec.clamp(0.0, 0.08);
         if clamped_dt <= 0.0 {
             return !self.is_settled();
         }
 
         const MAX_SUBSTEP: f32 = 1.0 / 240.0;
-        let steps = ((clamped_dt / MAX_SUBSTEP).ceil() as usize).clamp(1, 16);
+        let steps = ((clamped_dt / MAX_SUBSTEP).ceil() as usize).clamp(1, 24);
         let sub_dt = clamped_dt / steps as f32;
 
         for _ in 0..steps {
@@ -343,15 +402,8 @@ impl IslandAnimator {
         self.height.set_target(h);
         self.corner_radius.set_target(r);
         self.opacity.set_target(a);
-        if !was_hidden && mode != IslandMode::Hidden {
-            self.content_alpha.snap(0.2);
-        }
         self.content_alpha
             .set_target(if mode == IslandMode::Hidden { 0.0 } else { 1.0 });
-
-        if self.last_step.is_none() {
-            self.last_step = Some(Instant::now());
-        }
     }
 
     pub fn is_animating(&self) -> bool {
@@ -366,17 +418,17 @@ impl IslandAnimator {
     pub fn step(&mut self, now: Instant) -> bool {
         let dt = match self.last_step {
             Some(prev) => now.saturating_duration_since(prev).as_secs_f32(),
-            None => 1.0 / 120.0,
+            None => 1.0 / 144.0,
         };
         self.last_step = Some(now);
 
-        // Lò xo kích thước nảy nhẹ chuẩn Dynamic Island (~zeta ~ 0.78).
-        let moving_t = self.top.step(dt, 330.0, 28.5);
-        let moving_w = self.width.step(dt, 330.0, 28.5);
-        let moving_h = self.height.step(dt, 310.0, 27.5);
-        let moving_r = self.corner_radius.step(dt, 320.0, 29.0);
-        let moving_o = self.opacity.step(dt, 380.0, 36.0);
-        let moving_c = self.content_alpha.step(dt, 280.0, 32.0);
+        // `top` tắt dần tới hạn (không vọt âm đập cạnh trên), kích thước nảy tinh tế dứt khoát.
+        let moving_t = self.top.step(dt, 380.0, 39.0);
+        let moving_w = self.width.step(dt, 380.0, 34.0);
+        let moving_h = self.height.step(dt, 360.0, 33.0);
+        let moving_r = self.corner_radius.step(dt, 360.0, 34.0);
+        let moving_o = self.opacity.step(dt, 420.0, 41.0);
+        let moving_c = self.content_alpha.step(dt, 340.0, 36.0);
 
         let active = moving_t || moving_w || moving_h || moving_r || moving_o || moving_c;
         if !active {
@@ -453,8 +505,126 @@ pub fn fill_interactive_hitboxes(pill: PillRectDip, mode: IslandMode, out: &mut 
     match mode {
         IslandMode::Expanded => fill_expanded_hitboxes(pill, out),
         IslandMode::Settings => fill_settings_hitboxes(pill, out),
+        IslandMode::AudioDevices => fill_audio_devices_hitboxes(pill, 0, out),
+        IslandMode::Notice => fill_notice_hitboxes(pill, false, out),
         _ => {}
     }
+}
+
+pub fn fill_notice_hitboxes(pill: PillRectDip, has_secondary: bool, out: &mut Vec<UiHitbox>) {
+    out.clear();
+    let pad_x = 16.0;
+    let right_edge = pill.left + pill.width - pad_x;
+    let btn_bottom = pill.top + pill.height - 14.0;
+    let btn_top = btn_bottom - 32.0;
+    let primary_w = if has_secondary { 126.0 } else { 114.0 };
+    let primary_left = right_edge - primary_w;
+
+    if has_secondary {
+        let gap = 8.0;
+        let sec_w = 98.0;
+        let sec_right = primary_left - gap;
+        out.push(UiHitbox {
+            rect: UiRectDip {
+                left: sec_right - sec_w,
+                top: btn_top,
+                right: sec_right,
+                bottom: btn_bottom,
+            },
+            action: UiAction::NoticeSecondary,
+        });
+    }
+
+    out.push(UiHitbox {
+        rect: UiRectDip {
+            left: primary_left,
+            top: btn_top,
+            right: right_edge,
+            bottom: btn_bottom,
+        },
+        action: UiAction::NoticePrimary,
+    });
+}
+
+pub fn fill_audio_devices_hitboxes(
+    pill: PillRectDip,
+    visible_count: usize,
+    out: &mut Vec<UiHitbox>,
+) {
+    out.clear();
+    let pad_x = 16.0;
+    let inner_left = pill.left + pad_x;
+    let inner_right = pill.left + pill.width - pad_x;
+
+    let back_btn = UiRectDip {
+        left: inner_right - 74.0,
+        top: pill.top + 12.0,
+        right: inner_right,
+        bottom: pill.top + 36.0,
+    };
+    out.push(UiHitbox {
+        rect: back_btn,
+        action: UiAction::BackToMedia,
+    });
+
+    let count = visible_count.min(MAX_AUDIO_DEVICES_VISIBLE);
+    let list_top = pill.top + 56.0;
+    let row_h = 37.0;
+    let gap = 6.0;
+    for idx in 0..count {
+        let top = list_top + idx as f32 * (row_h + gap);
+        out.push(UiHitbox {
+            rect: UiRectDip {
+                left: inner_left,
+                top,
+                right: inner_right,
+                bottom: top + row_h,
+            },
+            action: UiAction::SelectAudioDevice(idx),
+        });
+    }
+}
+
+pub fn fill_volume_hud_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
+    out.clear();
+    let mute_btn = UiRectDip {
+        left: pill.left + 6.0,
+        top: pill.top + 3.0,
+        right: pill.left + 36.0,
+        bottom: pill.top + pill.height - 3.0,
+    };
+    let slider = UiRectDip {
+        left: pill.left + 44.0,
+        top: pill.top + 2.0,
+        right: (pill.left + pill.width - 50.0).max(pill.left + 84.0),
+        bottom: pill.top + pill.height - 2.0,
+    };
+    out.extend_from_slice(&[
+        UiHitbox {
+            rect: mute_btn,
+            action: UiAction::ToggleVolumeMute,
+        },
+        UiHitbox {
+            rect: slider,
+            action: UiAction::SeekVolume,
+        },
+    ]);
+}
+
+pub fn volume_seek_hit_bounds(track: UiRectDip) -> UiRectDip {
+    UiRectDip {
+        left: track.left - 8.0,
+        top: track.top,
+        right: track.right + 8.0,
+        bottom: track.bottom,
+    }
+}
+
+pub fn pill_contains_dip(pill: PillRectDip, x_dip: f32, y_dip: f32, pad: f32) -> bool {
+    x_dip >= pill.left - pad
+        && x_dip <= pill.left + pill.width + pad
+        && y_dip >= pill.top - pad
+        && y_dip <= pill.top + pill.height + pad
 }
 
 fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
@@ -493,6 +663,12 @@ fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
         right: center_x + 68.0,
         bottom: controls_bottom - 2.0,
     };
+    let audio_btn = UiRectDip {
+        left: pill.left + 16.0,
+        top: controls_bottom - 34.0,
+        right: center_x - 76.0,
+        bottom: controls_bottom - 2.0,
+    };
 
     out.extend_from_slice(&[
         UiHitbox {
@@ -514,6 +690,10 @@ fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
         UiHitbox {
             rect: next_btn,
             action: UiAction::MediaNext,
+        },
+        UiHitbox {
+            rect: audio_btn,
+            action: UiAction::OpenAudioDevices,
         },
     ]);
 }
@@ -550,7 +730,7 @@ pub fn should_collapse_expanded_on_blank_click(
 
 fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
     let pad_x = 16.0;
-    let gap = 8.0;
+    let gap = 7.0;
     let inner_left = pill.left + pad_x;
     let inner_right = pill.left + pill.width - pad_x;
     let col_w = ((inner_right - inner_left - gap) * 0.5).max(80.0);
@@ -562,12 +742,14 @@ fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
         bottom: pill.top + 36.0,
     };
 
-    let row1_top = pill.top + 46.0;
-    let row_h = 38.0;
+    let row1_top = pill.top + 44.0;
+    let row_h = 34.0;
     let row2_top = row1_top + row_h + gap;
     let row3_top = row2_top + row_h + gap;
+    let row4_top = row3_top + row_h + gap;
+    let row5_top = row4_top + row_h + gap;
     let bottom_h = 34.0;
-    let footer_top = row3_top + row_h + 10.0;
+    let footer_top = row5_top + row_h + 10.0;
 
     out.extend_from_slice(&[
         UiHitbox {
@@ -625,6 +807,33 @@ fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
                 top: row3_top,
                 right: inner_right,
                 bottom: row3_top + row_h,
+            },
+            action: UiAction::ToggleHudVolume,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left,
+                top: row4_top,
+                right: inner_left + col_w,
+                bottom: row4_top + row_h,
+            },
+            action: UiAction::ToggleHudWheel,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left + col_w + gap,
+                top: row4_top,
+                right: inner_right,
+                bottom: row4_top + row_h,
+            },
+            action: UiAction::ToggleHudPower,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left,
+                top: row5_top,
+                right: inner_right,
+                bottom: row5_top + row_h,
             },
             action: UiAction::CycleMonitor,
         },
@@ -715,9 +924,9 @@ mod tests {
     fn settings_hitboxes_stay_inside_pill_and_do_not_overlap() {
         let mut anim = IslandAnimator::new(IslandMode::Settings);
         let pill = anim.current_pill();
-        let mut hitboxes = Vec::with_capacity(9);
+        let mut hitboxes = Vec::with_capacity(12);
         fill_interactive_hitboxes(pill, IslandMode::Settings, &mut hitboxes);
-        assert_eq!(hitboxes.len(), 9);
+        assert_eq!(hitboxes.len(), 12);
 
         for hb in &hitboxes {
             assert!(hb.rect.left >= pill.left);
@@ -749,9 +958,20 @@ mod tests {
     fn expanded_hitboxes_stay_inside_pill_and_do_not_overlap() {
         let anim = IslandAnimator::new(IslandMode::Expanded);
         let pill = anim.current_pill();
-        let mut hitboxes = Vec::with_capacity(5);
+        let mut hitboxes = Vec::with_capacity(6);
         fill_interactive_hitboxes(pill, IslandMode::Expanded, &mut hitboxes);
-        assert_eq!(hitboxes.len(), 5);
+        assert_eq!(hitboxes.len(), 6);
+        let audio_rect = hitboxes
+            .iter()
+            .find(|hb| hb.action == UiAction::OpenAudioDevices)
+            .expect("OpenAudioDevices")
+            .rect;
+        let prev_rect = hitboxes
+            .iter()
+            .find(|hb| hb.action == UiAction::MediaPrev)
+            .expect("MediaPrev")
+            .rect;
+        assert!(audio_rect.right <= prev_rect.left);
 
         for hb in &hitboxes {
             assert!(hb.rect.left >= pill.left);
@@ -833,24 +1053,109 @@ mod tests {
     fn effective_mode_respects_fullscreen_visibility_and_auto_hide() {
         let cfg = AppConfig::default();
         assert_eq!(
-            effective_mode(IslandMode::Slim, cfg, false, false),
+            effective_mode(IslandMode::Slim, cfg, false, false, false),
             IslandMode::Slim
         );
         assert_eq!(
-            effective_mode(IslandMode::Expanded, cfg, true, true),
+            effective_mode(IslandMode::Expanded, cfg, true, true, true),
             IslandMode::Hidden
         );
 
         let mut auto_idle = cfg;
         auto_idle.auto_hide_when_idle = true;
         assert_eq!(
-            effective_mode(IslandMode::Slim, auto_idle, false, false),
+            effective_mode(IslandMode::Slim, auto_idle, false, false, false),
             IslandMode::Hidden
         );
+        // Khi có HUD dù đang Tự ẩn khi rảnh, viên thuốc vẫn bung gọn lên Compact.
         assert_eq!(
-            effective_mode(IslandMode::Compact, auto_idle, false, true),
+            effective_mode(IslandMode::Slim, auto_idle, false, false, true),
             IslandMode::Compact
         );
+        // Nhưng không nhảy đè nếu đang ở Expanded, Settings hoặc AudioDevices.
+        assert_eq!(
+            effective_mode(IslandMode::Expanded, auto_idle, false, true, true),
+            IslandMode::Expanded
+        );
+        assert_eq!(
+            effective_mode(IslandMode::Settings, auto_idle, false, false, true),
+            IslandMode::Settings
+        );
+        assert_eq!(
+            effective_mode(IslandMode::AudioDevices, auto_idle, false, false, true),
+            IslandMode::AudioDevices
+        );
+        assert_eq!(
+            effective_mode(IslandMode::Notice, auto_idle, false, false, true),
+            IslandMode::Notice
+        );
+    }
+
+    #[test]
+    fn notice_hitboxes_stay_inside_pill_and_do_not_overlap() {
+        let pill = IslandAnimator::new(IslandMode::Notice).current_pill();
+        let mut hitboxes = Vec::with_capacity(2);
+        fill_notice_hitboxes(pill, false, &mut hitboxes);
+        assert_eq!(hitboxes.len(), 1);
+        assert_eq!(hitboxes[0].action, UiAction::NoticePrimary);
+
+        fill_notice_hitboxes(pill, true, &mut hitboxes);
+        assert_eq!(hitboxes.len(), 2);
+        assert_eq!(hitboxes[0].action, UiAction::NoticeSecondary);
+        assert_eq!(hitboxes[1].action, UiAction::NoticePrimary);
+        for hb in &hitboxes {
+            assert!(hb.rect.left >= pill.left);
+            assert!(hb.rect.right <= pill.left + pill.width);
+            assert!(hb.rect.top >= pill.top + 86.0);
+            assert!(hb.rect.bottom <= pill.top + pill.height);
+        }
+        assert!(hitboxes[0].rect.right < hitboxes[1].rect.left);
+    }
+
+    #[test]
+    fn audio_devices_hitboxes_stay_inside_pill_and_do_not_overlap() {
+        let anim = IslandAnimator::new(IslandMode::AudioDevices);
+        let pill = anim.current_pill();
+        let mut hitboxes = Vec::with_capacity(6);
+        fill_audio_devices_hitboxes(pill, 7, &mut hitboxes);
+        assert_eq!(hitboxes.len(), 1 + MAX_AUDIO_DEVICES_VISIBLE);
+        assert_eq!(hitboxes[0].action, UiAction::BackToMedia);
+
+        for hb in &hitboxes {
+            assert!(hb.rect.left >= pill.left);
+            assert!(hb.rect.right <= pill.left + pill.width);
+            assert!(hb.rect.top >= pill.top);
+            assert!(hb.rect.bottom <= pill.top + pill.height);
+        }
+        for i in 0..hitboxes.len() {
+            for j in (i + 1)..hitboxes.len() {
+                let a = hitboxes[i].rect;
+                let b = hitboxes[j].rect;
+                let overlap_x = a.left < b.right && a.right > b.left;
+                let overlap_y = a.top < b.bottom && a.bottom > b.top;
+                assert!(!(overlap_x && overlap_y));
+            }
+        }
+    }
+
+    #[test]
+    fn volume_hud_hitboxes_stay_inside_compact_pill_and_do_not_overlap() {
+        let pill = IslandAnimator::new(IslandMode::Compact).current_pill();
+        let mut hitboxes = Vec::with_capacity(2);
+        fill_volume_hud_hitboxes(pill, &mut hitboxes);
+        assert_eq!(hitboxes.len(), 2);
+        let mute = hitboxes[0].rect;
+        let slider = hitboxes[1].rect;
+        assert!(mute.left >= pill.left && mute.right <= pill.left + pill.width);
+        assert!(slider.left >= mute.right && slider.right <= pill.left + pill.width);
+        let grab = volume_seek_hit_bounds(slider);
+        assert!(grab.contains(slider.left - 4.0, slider.top + 8.0));
+        assert!(pill_contains_dip(
+            pill,
+            pill.left + pill.width * 0.5,
+            pill.top + 12.0,
+            1.0
+        ));
     }
 
     #[test]

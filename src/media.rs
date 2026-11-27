@@ -214,7 +214,9 @@ impl SessionTracker {
             GlobalSystemMediaTransportControlsSession,
             TimelinePropertiesChangedEventArgs,
         >::new(move |_, _| {
-            let _ = tx3.send(MediaCommand::Refresh { check_artwork: true });
+            let _ = tx3.send(MediaCommand::Refresh {
+                check_artwork: false,
+            });
             Ok(())
         })) {
             self.timeline_token = token;

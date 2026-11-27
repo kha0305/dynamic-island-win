@@ -174,7 +174,7 @@ unsafe extern "system" fn collect_monitor_proc(
                 .is_ok()
                 && dpi_x > 0
             {
-                dpi_x as f32 / 96.0
+                (dpi_x as f32 / 96.0).clamp(0.5, 4.0)
             } else {
                 1.0
             };

@@ -1,16 +1,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
-use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
-    IDXGIAdapter1, IDXGIFactory6, IDXGIOutput,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Graphics::Dwm::DwmFlush;
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 pub const WM_APP_VSYNC_TICK: u32 = WM_APP + 2;
+const VISUALIZER_INTERVAL_MS: u64 = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TickerMode {
@@ -23,11 +21,9 @@ pub enum TickerMode {
 struct TickerState {
     running: bool,
     mode: TickerMode,
-    target_monitor_rect: Option<(i32, i32, i32, i32)>,
-    output_dirty: bool,
 }
 
-/// Luồng đồng bộ khung hình chỉ hoạt động khi có animation (VSync gốc) hoặc sóng nhạc (nhịp thấp 42ms), ngủ 0% CPU khi đứng yên.
+/// Luồng đồng bộ khung hình theo DWM Compositor (`DwmFlush`) khi chuyển động/kéo và nhịp thấp 50ms cho sóng nhạc, ngủ 0% CPU khi đứng yên.
 pub struct VSyncTicker {
     shared: Arc<(Mutex<TickerState>, Condvar)>,
     tick_pending: Arc<AtomicBool>,
@@ -41,8 +37,6 @@ impl VSyncTicker {
             Mutex::new(TickerState {
                 running: true,
                 mode: TickerMode::Off,
-                target_monitor_rect: None,
-                output_dirty: true,
             }),
             Condvar::new(),
         ));
@@ -70,18 +64,12 @@ impl VSyncTicker {
         if let Ok(mut guard) = lock.lock()
             && guard.mode != mode
         {
+            if mode == TickerMode::VSync {
+                // Đảm bảo chuyển sang VSync mượt mà không bị nuốt nhịp bởi tick cũ từ VisualizerSlow.
+                self.tick_pending.store(false, Ordering::Release);
+            }
             guard.mode = mode;
             cvar.notify_all();
-        }
-    }
-
-    pub fn set_monitor_rect(&self, rect: (i32, i32, i32, i32)) {
-        let (lock, _cvar) = &*self.shared;
-        if let Ok(mut guard) = lock.lock()
-            && guard.target_monitor_rect != Some(rect)
-        {
-            guard.target_monitor_rect = Some(rect);
-            guard.output_dirty = true;
         }
     }
 
@@ -109,10 +97,7 @@ fn vsync_loop(
     shared: Arc<(Mutex<TickerState>, Condvar)>,
     tick_pending: Arc<AtomicBool>,
 ) {
-    let factory: Option<IDXGIFactory6> =
-        unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0)) }.ok();
-    let mut cached_output: Option<IDXGIOutput> = None;
-
+    let mut fast_flush_streak = 0_u8;
     loop {
         let mode = {
             let (lock, cvar) = &*shared;
@@ -120,6 +105,7 @@ fn vsync_loop(
                 return;
             };
             while guard.running && guard.mode == TickerMode::Off {
+                fast_flush_streak = 0;
                 let Ok(next_guard) = cvar.wait(guard) else {
                     return;
                 };
@@ -128,25 +114,24 @@ fn vsync_loop(
             if !guard.running {
                 return;
             }
-            if guard.output_dirty {
-                guard.output_dirty = false;
-                cached_output = factory
-                    .as_ref()
-                    .and_then(|f| find_output_for_monitor(f, guard.target_monitor_rect));
-            }
             guard.mode
         };
 
         match mode {
             TickerMode::Off => continue,
             TickerMode::VSync => {
-                let waited_vblank = if let Some(out) = &cached_output {
-                    unsafe { out.WaitForVBlank() }.is_ok()
+                let t0 = Instant::now();
+                let flushed = unsafe { DwmFlush() }.is_ok();
+                if !flushed {
+                    fast_flush_streak = 0;
+                    thread::sleep(Duration::from_millis(7));
+                } else if t0.elapsed() < Duration::from_micros(400) {
+                    fast_flush_streak = fast_flush_streak.saturating_add(1);
+                    if fast_flush_streak >= 3 {
+                        thread::sleep(Duration::from_millis(7));
+                    }
                 } else {
-                    false
-                };
-                if !waited_vblank {
-                    thread::sleep(Duration::from_millis(8));
+                    fast_flush_streak = 0;
                 }
             }
             TickerMode::VisualizerSlow => {
@@ -155,7 +140,22 @@ fn vsync_loop(
                     return;
                 };
                 if guard.running && guard.mode == TickerMode::VisualizerSlow {
-                    let _ = cvar.wait_timeout(guard, Duration::from_millis(42));
+                    let (next_guard, _) = match cvar.wait_timeout(
+                        guard,
+                        Duration::from_millis(VISUALIZER_INTERVAL_MS),
+                    ) {
+                        Ok(res) => res,
+                        Err(_) => return,
+                    };
+                    if !next_guard.running || next_guard.mode == TickerMode::Off {
+                        continue;
+                    }
+                    if next_guard.mode == TickerMode::VSync {
+                        // Vừa chuyển sang animation khi đang ngủ VisualizerSlow: chạy luôn nhịp VSync không trễ.
+                        drop(next_guard);
+                        post_tick(hwnd_raw, &tick_pending);
+                        continue;
+                    }
                 }
             }
         }
@@ -169,40 +169,15 @@ fn vsync_loop(
             continue;
         }
 
-        if !tick_pending.swap(true, Ordering::AcqRel) {
-            let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
-            if unsafe { PostMessageW(Some(hwnd), WM_APP_VSYNC_TICK, WPARAM(0), LPARAM(0)) }.is_err()
-            {
-                tick_pending.store(false, Ordering::Release);
-            }
-        }
+        post_tick(hwnd_raw, &tick_pending);
     }
 }
 
-fn find_output_for_monitor(
-    factory: &IDXGIFactory6,
-    target_rect: Option<(i32, i32, i32, i32)>,
-) -> Option<IDXGIOutput> {
-    let adapter = unsafe {
-        factory.EnumAdapterByGpuPreference::<IDXGIAdapter1>(0, DXGI_GPU_PREFERENCE_MINIMUM_POWER)
-    }
-    .ok()?;
-
-    let mut fallback: Option<IDXGIOutput> = None;
-    let mut index = 0u32;
-    while let Ok(output) = unsafe { adapter.EnumOutputs(index) } {
-        if fallback.is_none() {
-            fallback = Some(output.clone());
+fn post_tick(hwnd_raw: isize, tick_pending: &AtomicBool) {
+    if !tick_pending.swap(true, Ordering::AcqRel) {
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+        if unsafe { PostMessageW(Some(hwnd), WM_APP_VSYNC_TICK, WPARAM(0), LPARAM(0)) }.is_err() {
+            tick_pending.store(false, Ordering::Release);
         }
-        if let Some((l, t, r, b)) = target_rect
-            && let Ok(desc) = unsafe { output.GetDesc() }
-        {
-            let d: RECT = desc.DesktopCoordinates;
-            if d.left == l && d.top == t && d.right == r && d.bottom == b {
-                return Some(output);
-            }
-        }
-        index += 1;
     }
-    fallback
 }

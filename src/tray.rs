@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
+use crate::hud::AudioOutputDevice;
 use crate::state::{AppConfig, MediaDisplayState};
 use crate::updater::APP_VERSION;
 use crate::watcher::DisplayMonitor;
@@ -29,9 +30,14 @@ pub const IDM_TOGGLE_VISUALIZER: usize = 1006;
 pub const IDM_TOGGLE_AUTOSTART: usize = 1007;
 pub const IDM_CHECK_UPDATE: usize = 1008;
 pub const IDM_TOGGLE_NOTCH_COLLAPSE: usize = 1009;
+pub const IDM_TOGGLE_HUD_VOLUME: usize = 1010;
+pub const IDM_TOGGLE_HUD_WHEEL: usize = 1011;
+pub const IDM_TOGGLE_HUD_POWER: usize = 1012;
 pub const IDM_EXIT: usize = 1099;
 pub const IDM_MONITOR_BASE: usize = 2000;
 pub const IDM_MONITOR_MAX: usize = 2031;
+pub const IDM_AUDIO_DEVICE_BASE: usize = 2100;
+pub const IDM_AUDIO_DEVICE_MAX: usize = 2131;
 
 pub struct TrayIcon {
     hwnd: HWND,
@@ -76,6 +82,7 @@ impl TrayIcon {
         config: AppConfig,
         media: &MediaDisplayState,
         monitors: &[DisplayMonitor],
+        audio_devices: &[AudioOutputDevice],
         is_expanded: bool,
         available_update: Option<&str>,
     ) {
@@ -136,6 +143,24 @@ impl TrayIcon {
             "Hiệu ứng sóng nhạc động",
             config.visualizer_enabled,
         );
+        append_menu_item(
+            menu,
+            IDM_TOGGLE_HUD_VOLUME,
+            "HUD Âm lượng",
+            config.hud_volume_enabled,
+        );
+        append_menu_item(
+            menu,
+            IDM_TOGGLE_HUD_WHEEL,
+            "Cuộn chuột trên pill chỉnh loa",
+            config.hud_wheel_enabled,
+        );
+        append_menu_item(
+            menu,
+            IDM_TOGGLE_HUD_POWER,
+            "HUD Pin / Sạc",
+            config.hud_power_enabled,
+        );
 
         let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
         if let Ok(sub_monitors) = unsafe { CreatePopupMenu() } {
@@ -168,6 +193,38 @@ impl TrayIcon {
             {
                 unsafe {
                     let _ = DestroyMenu(sub_monitors);
+                }
+            }
+        }
+        if let Ok(sub_audio) = unsafe { CreatePopupMenu() } {
+            if audio_devices.is_empty() {
+                append_disabled_header(sub_audio, "Chưa có thiết bị phát");
+            } else {
+                for (idx, dev) in audio_devices.iter().enumerate() {
+                    if IDM_AUDIO_DEVICE_BASE + idx > IDM_AUDIO_DEVICE_MAX {
+                        break;
+                    }
+                    append_menu_item(
+                        sub_audio,
+                        IDM_AUDIO_DEVICE_BASE + idx,
+                        &dev.name,
+                        dev.is_default,
+                    );
+                }
+            }
+            let audio_title = to_wide_null("Thiết bị phát âm thanh");
+            if unsafe {
+                AppendMenuW(
+                    menu,
+                    MF_POPUP,
+                    sub_audio.0 as usize,
+                    PCWSTR(audio_title.as_ptr()),
+                )
+            }
+            .is_err()
+            {
+                unsafe {
+                    let _ = DestroyMenu(sub_audio);
                 }
             }
         }

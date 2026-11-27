@@ -76,6 +76,21 @@ pub fn parse_config(text: &str) -> AppConfig {
                     cfg.notch_collapse_after_4s = b;
                 }
             }
+            "hud_volume_enabled" => {
+                if let Some(b) = parse_bool(val) {
+                    cfg.hud_volume_enabled = b;
+                }
+            }
+            "hud_wheel_enabled" => {
+                if let Some(b) = parse_bool(val) {
+                    cfg.hud_wheel_enabled = b;
+                }
+            }
+            "hud_power_enabled" => {
+                if let Some(b) = parse_bool(val) {
+                    cfg.hud_power_enabled = b;
+                }
+            }
             "auto_hide_when_idle" => {
                 if let Some(b) = parse_bool(val) {
                     cfg.auto_hide_when_idle = b;
@@ -104,9 +119,12 @@ pub fn parse_config(text: &str) -> AppConfig {
 
 pub fn serialize_config(cfg: &AppConfig) -> String {
     format!(
-        "visible={}\nnotch_collapse_after_4s={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nmonitor_index={}\n",
+        "visible={}\nnotch_collapse_after_4s={}\nhud_volume_enabled={}\nhud_wheel_enabled={}\nhud_power_enabled={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nmonitor_index={}\n",
         cfg.visible,
         cfg.notch_collapse_after_4s,
+        cfg.hud_volume_enabled,
+        cfg.hud_wheel_enabled,
+        cfg.hud_power_enabled,
         cfg.auto_hide_when_idle,
         cfg.auto_hide_fullscreen,
         cfg.visualizer_enabled,
@@ -229,6 +247,9 @@ mod tests {
         let cfg = AppConfig {
             visible: false,
             notch_collapse_after_4s: false,
+            hud_volume_enabled: false,
+            hud_wheel_enabled: false,
+            hud_power_enabled: false,
             auto_hide_when_idle: true,
             auto_hide_fullscreen: false,
             visualizer_enabled: false,
@@ -239,6 +260,9 @@ mod tests {
         let parsed = parse_config(&serialized);
         assert!(!parsed.visible);
         assert!(!parsed.notch_collapse_after_4s);
+        assert!(!parsed.hud_volume_enabled);
+        assert!(!parsed.hud_wheel_enabled);
+        assert!(!parsed.hud_power_enabled);
         assert!(parsed.auto_hide_when_idle);
         assert!(!parsed.auto_hide_fullscreen);
         assert!(!parsed.visualizer_enabled);
@@ -248,6 +272,9 @@ mod tests {
         let fallback = parse_config(corrupted);
         assert!(fallback.visible);
         assert!(fallback.notch_collapse_after_4s);
+        assert!(fallback.hud_volume_enabled);
+        assert!(fallback.hud_wheel_enabled);
+        assert!(fallback.hud_power_enabled);
         assert!(fallback.auto_hide_when_idle);
         assert!(fallback.auto_hide_fullscreen);
         assert_eq!(fallback.monitor_index, 0);

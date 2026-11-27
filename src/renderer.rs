@@ -1,34 +1,37 @@
 use std::mem::{ManuallyDrop, size_of};
 
-use windows::Foundation::PropertyValue;
+use windows::Foundation::{PropertyValue, Size};
+use windows::Graphics::DirectX::{DirectXAlphaMode, DirectXPixelFormat};
 use windows::Graphics::Effects::{
     IGraphicsEffect, IGraphicsEffect_Impl, IGraphicsEffectSource, IGraphicsEffectSource_Impl,
 };
 use windows::System::DispatcherQueueController;
 use windows::UI::Composition::Desktop::DesktopWindowTarget;
 use windows::UI::Composition::{
-    CompositionBrush, CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
-    CompositionStretch, Compositor, ContainerVisual, SpriteVisual, Visual,
+    CompositionBrush, CompositionDrawingSurface, CompositionEffectSourceParameter,
+    CompositionGraphicsDevice, CompositionRoundedRectangleGeometry, CompositionStretch,
+    CompositionSurfaceBrush, Compositor, ContainerVisual, SpriteVisual, Visual,
 };
-use windows::Win32::Foundation::{E_BOUNDS, E_INVALIDARG, HWND, TRUE};
+use windows::Win32::Foundation::{E_BOUNDS, E_INVALIDARG, HWND, POINT, TRUE};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BORDER_MODE_HARD, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
     D2D1_FIGURE_END_CLOSED, D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT, D2D_RECT_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     CLSID_D2D1GaussianBlur, CLSID_D2D1Saturation, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+    D2D1_BITMAP_BRUSH_PROPERTIES, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2,
-    D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_GAUSSIANBLUR_PROP_BORDER_MODE,
+    D2D1_BRUSH_PROPERTIES, D2D1_CAP_STYLE_ROUND, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_EXTEND_MODE_CLAMP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+    D2D1_GAMMA_2_2, D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_GAUSSIANBLUR_PROP_BORDER_MODE,
     D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
-    D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
-    D2D1_LINE_JOIN_ROUND, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_SATURATION_PROP_SATURATION,
-    D2D1_STROKE_STYLE_PROPERTIES, D2D1CreateFactory, ID2D1Bitmap, ID2D1Bitmap1, ID2D1Device,
-    ID2D1DeviceContext, ID2D1Factory, ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1Layer,
-    ID2D1LinearGradientBrush, ID2D1PathGeometry, ID2D1RadialGradientBrush, ID2D1RenderTarget,
-    ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES,
+    D2D1_ROUNDED_RECT, D2D1_SATURATION_PROP_SATURATION, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1CreateFactory, ID2D1Bitmap, ID2D1Bitmap1, ID2D1BitmapBrush, ID2D1Device, ID2D1DeviceContext,
+    ID2D1Factory, ID2D1Factory1, ID2D1Geometry, ID2D1Image, ID2D1Layer, ID2D1LinearGradientBrush,
+    ID2D1PathGeometry, ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush,
+    ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN, D3D_DRIVER_TYPE_WARP,
@@ -43,10 +46,12 @@ use windows::Win32::Graphics::DirectComposition::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
     DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
-    IDWriteFactory, IDWriteInlineObject, IDWriteTextFormat,
+    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING, DWRITE_WORD_WRAPPING_NO_WRAP,
+    DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteInlineObject,
+    IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_USE_HOSTBACKDROPBRUSH, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
@@ -60,7 +65,9 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIAdapter1, IDXGIDevice, IDXGIFactory2, IDXGIFactory6,
     IDXGISurface, IDXGISwapChain1,
 };
-use windows::Win32::System::WinRT::Composition::{ICompositorDesktopInterop, ICompositorInterop};
+use windows::Win32::System::WinRT::Composition::{
+    ICompositionDrawingSurfaceInterop, ICompositorDesktopInterop, ICompositorInterop,
+};
 use windows::Win32::System::WinRT::Graphics::Direct2D::{
     GRAPHICS_EFFECT_PROPERTY_MAPPING, GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT,
     IGraphicsEffectD2D1Interop, IGraphicsEffectD2D1Interop_Impl,
@@ -73,11 +80,14 @@ use windows::Win32::UI::Controls::MARGINS;
 use windows::core::{BOOL, GUID, HSTRING, Interface, PCWSTR, implement};
 use windows_numerics::{Matrix3x2, Vector2, Vector3};
 
+use crate::hud::{AudioOutputDevice, VolumeSnapshot};
 use crate::media::{ArtworkUpdate, DecodedArtwork};
 use crate::state::{
-    AppConfig, IslandMode, MediaDisplayState, PillRectDip, UiAction, UiHitbox, UiRectDip,
-    compute_surface_size_px, current_windows_filetime_ticks, fill_interactive_hitboxes,
-    format_duration_ticks,
+    AppConfig, HudContent, IslandMode, IslandNoticeView, MAX_AUDIO_DEVICES_VISIBLE,
+    MediaDisplayState, NoticeKind, PillRectDip, UiAction, UiHitbox, UiRectDip,
+    compute_surface_size_px, current_windows_filetime_ticks, fill_audio_devices_hitboxes,
+    fill_interactive_hitboxes, fill_notice_hitboxes, fill_volume_hud_hitboxes,
+    format_duration_ticks, target_dimensions_for_mode,
 };
 use crate::tray::to_wide_null;
 
@@ -88,10 +98,17 @@ pub struct RenderFrameInput<'a> {
     pub content_alpha: f32,
     pub config: AppConfig,
     pub media: &'a MediaDisplayState,
+    pub active_hud: Option<HudContent>,
+    pub volume_scrub_ratio: Option<f32>,
     pub hovered_action: Option<UiAction>,
     pub timeline_scrub_ratio: Option<f32>,
     pub monitor_label: &'a str,
     pub visualizer_phase: f32,
+    pub audio_devices: &'a [AudioOutputDevice],
+    pub audio_device_scroll: usize,
+    pub volume_snapshot: VolumeSnapshot,
+    pub current_audio_device_name: Option<&'a str>,
+    pub notice: Option<IslandNoticeView<'a>>,
 }
 
 struct BrushPalette {
@@ -115,13 +132,39 @@ struct BrushPalette {
     danger_bg: ID2D1SolidColorBrush,
     danger_hover: ID2D1SolidColorBrush,
     danger_border: ID2D1SolidColorBrush,
+    power_ok: ID2D1SolidColorBrush,
+    power_warn: ID2D1SolidColorBrush,
     art_bg: ID2D1SolidColorBrush,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextFormatSlot {
+    Title,
+    Subtitle,
+    BodyLeft,
+    Compact,
+    CompactSub,
+    Button,
+    ButtonCenter,
+    Small,
+    SmallLeft,
+    SmallRight,
+}
+
+struct TextLayoutCacheEntry {
+    slot: TextFormatSlot,
+    text: String,
+    w_tenth: i32,
+    h_tenth: i32,
+    layout: IDWriteTextLayout,
 }
 
 struct TextFormats {
     title: IDWriteTextFormat,
     subtitle: IDWriteTextFormat,
+    body_left: IDWriteTextFormat,
     compact: IDWriteTextFormat,
+    compact_sub: IDWriteTextFormat,
     button: IDWriteTextFormat,
     button_center: IDWriteTextFormat,
     small: IDWriteTextFormat,
@@ -129,11 +172,29 @@ struct TextFormats {
     small_right: IDWriteTextFormat,
 }
 
+impl TextFormats {
+    fn by_slot(&self, slot: TextFormatSlot) -> &IDWriteTextFormat {
+        match slot {
+            TextFormatSlot::Title => &self.title,
+            TextFormatSlot::Subtitle => &self.subtitle,
+            TextFormatSlot::BodyLeft => &self.body_left,
+            TextFormatSlot::Compact => &self.compact,
+            TextFormatSlot::CompactSub => &self.compact_sub,
+            TextFormatSlot::Button => &self.button,
+            TextFormatSlot::ButtonCenter => &self.button_center,
+            TextFormatSlot::Small => &self.small,
+            TextFormatSlot::SmallLeft => &self.small_left,
+            TextFormatSlot::SmallRight => &self.small_right,
+        }
+    }
+}
+
 struct IconGeometries {
     round_stroke: ID2D1StrokeStyle,
     play_triangle: ID2D1PathGeometry,
     prev_triangle: ID2D1PathGeometry,
     next_triangle: ID2D1PathGeometry,
+    speaker_cone: ID2D1PathGeometry,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -182,36 +243,67 @@ struct WinRtBackdropLayer {
 enum CompositionHost {
     WinRtGlass {
         _dispatcher_queue: DispatcherQueueController,
-        compositor: Compositor,
+        _compositor: Compositor,
         _target: DesktopWindowTarget,
         root: ContainerVisual,
         backdrop: Option<WinRtBackdropLayer>,
+        graphics_device: CompositionGraphicsDevice,
+        _drawing_surface: CompositionDrawingSurface,
+        surface_brush: CompositionSurfaceBrush,
+        surface_interop: ICompositionDrawingSurfaceInterop,
         content_visual: SpriteVisual,
     },
     DirectCompFallback {
         device: IDCompositionDevice,
         _target: IDCompositionTarget,
         _visual: IDCompositionVisual,
+        swap_chain: IDXGISwapChain1,
+        target_bitmap: Option<ID2D1Bitmap1>,
     },
 }
 
 impl CompositionHost {
     fn new(
         hwnd: HWND,
+        d3d_device: &ID3D11Device,
         dxgi_device: &IDXGIDevice,
-        swap_chain: &IDXGISwapChain1,
+        d2d_device: &ID2D1Device,
+        factory6: &IDXGIFactory6,
         surface_w_px: f32,
         surface_h_px: f32,
     ) -> windows::core::Result<Self> {
-        if let Ok(winrt) = try_init_winrt_glass(hwnd, swap_chain, surface_w_px, surface_h_px) {
+        if let Ok(winrt) =
+            try_init_winrt_glass(hwnd, d2d_device, surface_w_px, surface_h_px)
+        {
             return Ok(winrt);
         }
+
+        let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: surface_w_px.round() as u32,
+            Height: surface_h_px.round() as u32,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            Stereo: false.into(),
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            Scaling: DXGI_SCALING_STRETCH,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+            Flags: 0,
+        };
+        let factory2: IDXGIFactory2 = factory6.cast()?;
+        let swap_chain = unsafe {
+            factory2.CreateSwapChainForComposition(d3d_device, &swap_chain_desc, None)
+        }?;
 
         let device: IDCompositionDevice = unsafe { DCompositionCreateDevice(dxgi_device) }?;
         let target = unsafe { device.CreateTargetForHwnd(hwnd, true) }?;
         let visual = unsafe { device.CreateVisual() }?;
         unsafe {
-            visual.SetContent(swap_chain)?;
+            visual.SetContent(&swap_chain)?;
             target.SetRoot(&visual)?;
             device.Commit()?;
         }
@@ -219,6 +311,8 @@ impl CompositionHost {
             device,
             _target: target,
             _visual: visual,
+            swap_chain,
+            target_bitmap: None,
         })
     }
 
@@ -323,32 +417,71 @@ impl CompositionHost {
     }
 
     fn resize_content(
-        &self,
-        swap_chain: &IDXGISwapChain1,
+        &mut self,
+        d2d_context: &ID2D1DeviceContext,
         surface_w_px: f32,
         surface_h_px: f32,
     ) -> windows::core::Result<()> {
         match self {
             Self::WinRtGlass {
-                compositor,
                 root,
+                backdrop,
+                graphics_device,
+                _drawing_surface,
+                surface_brush,
+                surface_interop,
                 content_visual,
                 ..
             } => {
+                // Tạo mới bề mặt theo đúng kích thước pixel vật lý và gán lại brush để tránh kẹt tỷ lệ 1x khi đổi DPI/màn hình.
+                let new_surface = graphics_device.CreateDrawingSurface(
+                    Size {
+                        Width: surface_w_px,
+                        Height: surface_h_px,
+                    },
+                    DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                    DirectXAlphaMode::Premultiplied,
+                )?;
+                let new_interop: ICompositionDrawingSurfaceInterop = new_surface.cast()?;
+                surface_brush.SetSurface(&new_surface)?;
+                surface_brush.SetStretch(CompositionStretch::Fill)?;
+                surface_brush.SetHorizontalAlignmentRatio(0.0)?;
+                surface_brush.SetVerticalAlignmentRatio(0.0)?;
                 let sz = Vector2 {
                     X: surface_w_px,
                     Y: surface_h_px,
                 };
                 root.SetSize(sz)?;
-                let interop: ICompositorInterop = compositor.cast()?;
-                let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swap_chain) }?;
-                let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
-                brush.SetStretch(CompositionStretch::Fill)?;
-                content_visual.SetBrush(&brush)?;
                 content_visual.SetSize(sz)?;
+                *_drawing_surface = new_surface;
+                *surface_interop = new_interop;
+                if let Some(layer) = backdrop {
+                    layer.last_state = BackdropState::HIDDEN;
+                }
                 Ok(())
             }
-            Self::DirectCompFallback { device, .. } => unsafe { device.Commit() },
+            Self::DirectCompFallback {
+                device,
+                swap_chain,
+                target_bitmap,
+                ..
+            } => {
+                unsafe {
+                    d2d_context.SetTarget(None);
+                }
+                *target_bitmap = None;
+                unsafe {
+                    swap_chain.ResizeBuffers(
+                        2,
+                        surface_w_px.round() as u32,
+                        surface_h_px.round() as u32,
+                        DXGI_FORMAT_B8G8R8A8_UNORM,
+                        Default::default(),
+                    )?;
+                }
+                *target_bitmap = Some(attach_swapchain_backbuffer(d2d_context, swap_chain)?);
+                unsafe { device.Commit() }
+            }
         }
     }
 }
@@ -559,7 +692,7 @@ fn create_blurred_host_backdrop_brush(
 
 fn try_init_winrt_glass(
     hwnd: HWND,
-    swap_chain: &IDXGISwapChain1,
+    d2d_device: &ID2D1Device,
     surface_w_px: f32,
     surface_h_px: f32,
 ) -> windows::core::Result<CompositionHost> {
@@ -583,9 +716,20 @@ fn try_init_winrt_glass(
     let dispatcher_queue = create_dispatcher_queue_current_thread()?;
     let compositor = Compositor::new()?;
     let interop: ICompositorInterop = compositor.cast()?;
-    let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swap_chain) }?;
-    let surface_brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+    let graphics_device = unsafe { interop.CreateGraphicsDevice(d2d_device) }?;
+    let drawing_surface = graphics_device.CreateDrawingSurface(
+        Size {
+            Width: surface_w_px,
+            Height: surface_h_px,
+        },
+        DirectXPixelFormat::B8G8R8A8UIntNormalized,
+        DirectXAlphaMode::Premultiplied,
+    )?;
+    let surface_interop: ICompositionDrawingSurfaceInterop = drawing_surface.cast()?;
+    let surface_brush = compositor.CreateSurfaceBrushWithSurface(&drawing_surface)?;
     surface_brush.SetStretch(CompositionStretch::Fill)?;
+    surface_brush.SetHorizontalAlignmentRatio(0.0)?;
+    surface_brush.SetVerticalAlignmentRatio(0.0)?;
 
     let root = compositor.CreateContainerVisual()?;
     root.SetSize(Vector2 {
@@ -630,12 +774,58 @@ fn try_init_winrt_glass(
 
     Ok(CompositionHost::WinRtGlass {
         _dispatcher_queue: dispatcher_queue,
-        compositor,
+        _compositor: compositor,
         _target: target,
         root,
         backdrop,
+        graphics_device,
+        _drawing_surface: drawing_surface,
+        surface_brush,
+        surface_interop,
         content_visual,
     })
+}
+
+#[derive(Clone, Copy)]
+struct DrawCanvas<'a> {
+    ctx: &'a ID2D1DeviceContext,
+    scale: f32,
+    offset_x_px: f32,
+    offset_y_px: f32,
+}
+
+impl<'a> DrawCanvas<'a> {
+    fn base_transform(&self) -> Matrix3x2 {
+        Matrix3x2 {
+            M11: self.scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: self.scale,
+            M31: self.offset_x_px,
+            M32: self.offset_y_px,
+        }
+    }
+
+    fn set_local_translation(&self, tx: f32, ty: f32) {
+        let mat = Matrix3x2 {
+            M11: self.scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: self.scale,
+            M31: self.offset_x_px + tx * self.scale,
+            M32: self.offset_y_px + ty * self.scale,
+        };
+        unsafe {
+            self.ctx.SetTransform(&mat);
+        }
+    }
+
+    fn reset_transform(&self) {
+        let mat = self.base_transform();
+        unsafe {
+            self.ctx.SetTransform(&mat);
+        }
+    }
 }
 
 pub struct IslandRenderer {
@@ -645,18 +835,18 @@ pub struct IslandRenderer {
     d2d_context: ID2D1DeviceContext,
     dwrite_factory: IDWriteFactory,
     comp_host: CompositionHost,
-    swap_chain: IDXGISwapChain1,
-    target_bitmap: Option<ID2D1Bitmap1>,
     artwork_bitmap: Option<ID2D1Bitmap1>,
+    artwork_brush: Option<ID2D1BitmapBrush>,
     artwork_aura_bitmap: Option<ID2D1Bitmap1>,
+    artwork_aura_brush: Option<ID2D1BitmapBrush>,
     artwork_size_px: (u32, u32),
     ambient_glow_brush: ID2D1RadialGradientBrush,
-    artwork_layer: ID2D1Layer,
     clip_layer: ID2D1Layer,
     brushes: BrushPalette,
     fonts: TextFormats,
     icons: IconGeometries,
     utf16_scratch: Vec<u16>,
+    text_cache: Vec<TextLayoutCacheEntry>,
     hitbox_scratch: Vec<UiHitbox>,
     adapter_name: String,
     dpi_scale: f32,
@@ -669,44 +859,34 @@ impl IslandRenderer {
         let (d3d_device, adapter_name) = create_low_power_d3d11_device(&factory6)?;
         let dxgi_device: IDXGIDevice = d3d_device.cast()?;
 
-        let (surface_w, surface_h) = compute_surface_size_px(dpi_scale);
-        let swap_chain_desc = DXGI_SWAP_CHAIN_DESC1 {
-            Width: surface_w as u32,
-            Height: surface_h as u32,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            Stereo: false.into(),
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            BufferCount: 2,
-            Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
-            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
-            Flags: 0,
-        };
-
-        let factory2: IDXGIFactory2 = factory6.cast()?;
-        let swap_chain = unsafe {
-            factory2.CreateSwapChainForComposition(&d3d_device, &swap_chain_desc, None)
-        }?;
-
-        let comp_host = CompositionHost::new(
-            hwnd,
-            &dxgi_device,
-            &swap_chain,
-            surface_w as f32,
-            surface_h as f32,
-        )?;
-
         let d2d_factory: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) }?;
         let d2d_device = unsafe { d2d_factory.CreateDevice(&dxgi_device) }?;
         let d2d_context =
             unsafe { d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE) }?;
+
+        let clamped_dpi = dpi_scale.clamp(0.5, 4.0);
+        let (surface_w, surface_h) = compute_surface_size_px(clamped_dpi);
+        let mut comp_host = CompositionHost::new(
+            hwnd,
+            &d3d_device,
+            &dxgi_device,
+            &d2d_device,
+            &factory6,
+            surface_w as f32,
+            surface_h as f32,
+        )?;
+
+        if let CompositionHost::DirectCompFallback {
+            swap_chain,
+            target_bitmap,
+            ..
+        } = &mut comp_host
+        {
+            *target_bitmap = Some(attach_swapchain_backbuffer(&d2d_context, swap_chain)?);
+        }
+
         let clip_layer = unsafe { d2d_context.CreateLayer(None) }?;
-        let artwork_layer = unsafe { d2d_context.CreateLayer(None) }?;
         let dwrite_factory: IDWriteFactory =
             unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
 
@@ -722,23 +902,23 @@ impl IslandRenderer {
             d2d_context,
             dwrite_factory,
             comp_host,
-            swap_chain,
-            target_bitmap: None,
             artwork_bitmap: None,
+            artwork_brush: None,
             artwork_aura_bitmap: None,
+            artwork_aura_brush: None,
             artwork_size_px: (0, 0),
             ambient_glow_brush,
-            artwork_layer,
             clip_layer,
             brushes,
             fonts,
             icons,
             utf16_scratch: Vec::with_capacity(128),
+            text_cache: Vec::with_capacity(32),
             hitbox_scratch: Vec::with_capacity(8),
             adapter_name,
-            dpi_scale,
+            dpi_scale: clamped_dpi,
         };
-        renderer.attach_backbuffer(dpi_scale)?;
+        renderer.warm_up_text_formats();
         Ok(renderer)
     }
 
@@ -768,7 +948,9 @@ impl IslandRenderer {
         match update {
             ArtworkUpdate::Unchanged => {}
             ArtworkUpdate::Clear => {
+                self.artwork_brush = None;
                 self.artwork_bitmap = None;
+                self.artwork_aura_brush = None;
                 self.artwork_aura_bitmap = None;
                 self.artwork_size_px = (0, 0);
                 self.apply_media_theme_colors([0.38, 0.85, 1.0], 0.14);
@@ -782,17 +964,77 @@ impl IslandRenderer {
                 self.artwork_aura_bitmap = self
                     .upload_bgra_bitmap(aura_w, aura_h, &aura_bgra)
                     .ok();
+                self.artwork_aura_brush = self
+                    .artwork_aura_bitmap
+                    .as_ref()
+                    .and_then(|bmp| self.create_clamped_bitmap_brush(bmp).ok());
 
                 match self.upload_artwork_bitmap(&art) {
                     Ok(bmp) => {
+                        self.artwork_brush = self.create_clamped_bitmap_brush(&bmp).ok();
                         self.artwork_bitmap = Some(bmp);
                         self.artwork_size_px = sz;
                     }
                     Err(_) => {
+                        self.artwork_brush = None;
                         self.artwork_bitmap = None;
                         self.artwork_size_px = (0, 0);
                     }
                 }
+            }
+        }
+    }
+
+    fn create_clamped_bitmap_brush(
+        &self,
+        bitmap: &ID2D1Bitmap1,
+    ) -> windows::core::Result<ID2D1BitmapBrush> {
+        let bmp_base: ID2D1Bitmap = bitmap.cast()?;
+        let bmp_props = D2D1_BITMAP_BRUSH_PROPERTIES {
+            extendModeX: D2D1_EXTEND_MODE_CLAMP,
+            extendModeY: D2D1_EXTEND_MODE_CLAMP,
+            interpolationMode: D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+        };
+        let brush_props = D2D1_BRUSH_PROPERTIES {
+            opacity: 1.0,
+            transform: Matrix3x2::identity(),
+        };
+        unsafe {
+            ID2D1RenderTarget::CreateBitmapBrush(
+                &self.d2d_context,
+                &bmp_base,
+                Some(&bmp_props),
+                Some(&brush_props),
+            )
+        }
+    }
+
+    fn warm_up_text_formats(&mut self) {
+        let samples: &[(TextFormatSlot, &str)] = &[
+            (TextFormatSlot::Title, "Win Dynamic Island"),
+            (TextFormatSlot::Title, "Thiết bị phát âm thanh"),
+            (TextFormatSlot::Title, "Có bản cập nhật mới"),
+            (TextFormatSlot::Subtitle, "Win Dynamic Island"),
+            (TextFormatSlot::BodyLeft, "Bạn đang sử dụng phiên bản mới nhất."),
+            (TextFormatSlot::Compact, "Đang cắm sạc"),
+            (TextFormatSlot::Compact, "Đang dùng pin"),
+            (TextFormatSlot::Compact, "Pin yếu"),
+            (TextFormatSlot::Compact, "Win Dynamic Island"),
+            (TextFormatSlot::CompactSub, "Bấm để mở rộng hoặc cuộn chỉnh loa"),
+            (TextFormatSlot::Button, "Bảng điều khiển nhanh"),
+            (TextFormatSlot::ButtonCenter, "Cập nhật ngay"),
+            (TextFormatSlot::ButtonCenter, "Thoát ứng dụng"),
+            (TextFormatSlot::Small, "Cài đặt"),
+            (TextFormatSlot::SmallLeft, "Âm thanh"),
+            (TextFormatSlot::SmallRight, "Đang dùng"),
+            (TextFormatSlot::SmallRight, "100%"),
+        ];
+        for &(slot, text) in samples {
+            let wide = to_wide_null(text);
+            let fmt = self.fonts.by_slot(slot);
+            if let Ok(layout) = unsafe { self.dwrite_factory.CreateTextLayout(&wide, fmt, 180.0, 28.0) } {
+                let mut metrics = Default::default();
+                let _ = unsafe { layout.GetMetrics(&mut metrics) };
             }
         }
     }
@@ -848,74 +1090,135 @@ impl IslandRenderer {
     }
 
     pub fn resize_for_dpi(&mut self, dpi_scale: f32) -> windows::core::Result<()> {
-        if (self.dpi_scale - dpi_scale).abs() < 0.001 {
+        let clamped = dpi_scale.clamp(0.5, 4.0);
+        if (self.dpi_scale - clamped).abs() < 0.001 {
             return Ok(());
         }
-        self.dpi_scale = dpi_scale;
-        unsafe {
-            self.d2d_context.SetTarget(None);
-        }
-        self.target_bitmap = None;
-
-        let (surface_w, surface_h) = compute_surface_size_px(dpi_scale);
-        unsafe {
-            self.swap_chain.ResizeBuffers(
-                2,
-                surface_w as u32,
-                surface_h as u32,
-                DXGI_FORMAT_B8G8R8A8_UNORM,
-                Default::default(),
-            )?;
-        }
-        self.attach_backbuffer(dpi_scale)?;
+        let (surface_w, surface_h) = compute_surface_size_px(clamped);
         self.comp_host
-            .resize_content(&self.swap_chain, surface_w as f32, surface_h as f32)?;
+            .resize_content(&self.d2d_context, surface_w as f32, surface_h as f32)?;
+        self.dpi_scale = clamped;
+        self.text_cache.clear();
         Ok(())
     }
 
     pub fn render(&mut self, input: &RenderFrameInput<'_>) -> windows::core::Result<()> {
+        let scale = self.dpi_scale.clamp(0.5, 4.0);
         self.comp_host
-            .update_backdrop(input.pill, input.pill_opacity, self.dpi_scale);
+            .update_backdrop(input.pill, input.pill_opacity, scale);
 
-        let Some(bitmap) = self.target_bitmap.clone() else {
-            return Ok(());
-        };
-        let target_image: ID2D1Image = bitmap.cast()?;
         let clear = D2D1_COLOR_F {
             r: 0.0,
             g: 0.0,
             b: 0.0,
             a: 0.0,
         };
+        let has_backdrop = self.comp_host.has_live_backdrop();
 
-        unsafe {
-            self.d2d_context.SetTarget(&target_image);
-            self.d2d_context.BeginDraw();
-            self.d2d_context.Clear(Some(&clear));
+        match &self.comp_host {
+            CompositionHost::WinRtGlass {
+                surface_interop, ..
+            } => {
+                let surface_interop = surface_interop.clone();
+                let mut offset = POINT::default();
+                let draw_ctx: ID2D1DeviceContext =
+                    unsafe { surface_interop.BeginDraw(None, &mut offset) }?;
+                // Giữ baseline 96 DPI và phóng đại tường minh qua ma trận world để không bao giờ bị rơi về 1x trên màn hình HiDPI.
+                let canvas = DrawCanvas {
+                    ctx: &draw_ctx,
+                    scale,
+                    offset_x_px: offset.x as f32,
+                    offset_y_px: offset.y as f32,
+                };
+                let base_transform = canvas.base_transform();
+                unsafe {
+                    draw_ctx.SetDpi(96.0, 96.0);
+                    draw_ctx.SetTransform(&base_transform);
+                    draw_ctx.Clear(Some(&clear));
+                }
+                self.draw_scene(canvas, input, has_backdrop);
+                unsafe {
+                    draw_ctx.SetTransform(&Matrix3x2::identity());
+                }
+                drop(draw_ctx);
+                unsafe {
+                    surface_interop.EndDraw()?;
+                }
+                Ok(())
+            }
+            CompositionHost::DirectCompFallback {
+                swap_chain,
+                target_bitmap,
+                ..
+            } => {
+                let Some(bitmap) = target_bitmap.clone() else {
+                    return Ok(());
+                };
+                let swap_chain = swap_chain.clone();
+                let d2d_ctx = self.d2d_context.clone();
+                let target_image: ID2D1Image = bitmap.cast()?;
+                let canvas = DrawCanvas {
+                    ctx: &d2d_ctx,
+                    scale,
+                    offset_x_px: 0.0,
+                    offset_y_px: 0.0,
+                };
+                let base_transform = canvas.base_transform();
+                unsafe {
+                    d2d_ctx.SetTarget(&target_image);
+                    d2d_ctx.BeginDraw();
+                    d2d_ctx.SetDpi(96.0, 96.0);
+                    d2d_ctx.SetTransform(&base_transform);
+                    d2d_ctx.Clear(Some(&clear));
+                }
+                self.draw_scene(canvas, input, false);
+                unsafe {
+                    d2d_ctx.SetTransform(&Matrix3x2::identity());
+                    d2d_ctx.EndDraw(None, None)?;
+                    swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
+                }
+                Ok(())
+            }
+        }
+    }
 
-            if input.pill_opacity > 0.02 && input.pill.height >= 2.0 {
-                let show_media_aura =
-                    !matches!(input.mode, IslandMode::Slim | IslandMode::Settings)
-                        && input.media.has_session;
+    fn draw_scene(
+        &mut self,
+        canvas: DrawCanvas<'_>,
+        input: &RenderFrameInput<'_>,
+        has_backdrop: bool,
+    ) {
+        if input.pill_opacity > 0.02 && input.pill.height >= 2.0 {
+            let show_media_aura = !matches!(
+                input.mode,
+                IslandMode::Slim
+                    | IslandMode::Settings
+                    | IslandMode::AudioDevices
+                    | IslandMode::Notice
+            ) && input.active_hud.is_none()
+                && input.media.has_session;
+            unsafe {
                 self.draw_pill_shell(
+                    canvas,
                     input.pill,
                     input.pill_opacity,
-                    self.comp_host.has_live_backdrop(),
+                    has_backdrop,
                     show_media_aura,
                 );
-                if input.content_alpha > 0.05 && input.mode != IslandMode::Hidden {
-                    self.draw_clipped_contents(input);
+            }
+            let effective_alpha =
+                input.content_alpha.clamp(0.0, 1.0) * mode_content_reveal_alpha(input.pill, input.mode);
+            if effective_alpha > 0.03 && input.mode != IslandMode::Hidden {
+                unsafe {
+                    self.draw_clipped_contents(canvas, input, effective_alpha);
                 }
             }
-
-            self.d2d_context.EndDraw(None, None)?;
-            self.swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
         }
-        Ok(())
     }
 
     unsafe fn draw_pill_shell(
         &self,
+        canvas: DrawCanvas<'_>,
         pill: PillRectDip,
         opacity: f32,
         has_backdrop: bool,
@@ -955,56 +1258,35 @@ impl IslandRenderer {
             Y: pill.top + pill.height * 0.45,
         };
         let opacity = opacity.clamp(0.0, 1.0);
-        let has_video_aura = show_media_aura && self.artwork_aura_bitmap.is_some();
+        let has_video_aura = show_media_aura && self.artwork_aura_brush.is_some();
 
         unsafe {
             if !has_backdrop {
                 self.brushes.bg.SetOpacity(opacity);
-                self.d2d_context
-                    .FillRoundedRectangle(&rounded, &self.brushes.bg);
+                canvas.ctx.FillRoundedRectangle(&rounded, &self.brushes.bg);
             }
 
-            if has_video_aura && let Some(aura_bmp) = &self.artwork_aura_bitmap {
+            if has_video_aura && let Some(aura_brush) = &self.artwork_aura_brush {
                 // Giữ lớp nền khói tối đủ đầm (~0.48-0.56) dưới aura để nền trắng không tẩy nhạt màu video.
                 self.brushes.glass_fill.SetStartPoint(start);
                 self.brushes.glass_fill.SetEndPoint(end);
                 self.brushes.glass_fill.SetOpacity(opacity * 0.78);
-                self.d2d_context
+                canvas
+                    .ctx
                     .FillRoundedRectangle(&rounded, &self.brushes.glass_fill);
 
-                if let Ok(geom) = self.d2d_factory.CreateRoundedRectangleGeometry(&rounded)
-                    && let Ok(geom_base) = geom.cast::<ID2D1Geometry>()
-                    && let Ok(aura_base) = aura_bmp.cast::<ID2D1Bitmap>()
-                {
-                    let mut layer_params = D2D1_LAYER_PARAMETERS1 {
-                        contentBounds: rounded.rect,
-                        geometricMask: ManuallyDrop::new(Some(geom_base)),
-                        maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                        maskTransform: Matrix3x2::identity(),
-                        opacity: opacity * 0.54,
-                        opacityBrush: ManuallyDrop::new(None),
-                        layerOptions: D2D1_LAYER_OPTIONS1_NONE,
-                    };
-                    self.d2d_context
-                        .PushLayer(&layer_params, &self.artwork_layer);
-                    ManuallyDrop::drop(&mut layer_params.geometricMask);
-                    ManuallyDrop::drop(&mut layer_params.opacityBrush);
-                    self.d2d_context.DrawBitmap(
-                        &aura_base,
-                        Some(&rounded.rect),
-                        1.0,
-                        D2D1_INTERPOLATION_MODE_LINEAR,
-                        None,
-                        None,
-                    );
-                    self.d2d_context.PopLayer();
-                }
+                let dst = rounded.rect;
+                let mat = bitmap_rect_transform(0.0, 0.0, 16.0, 10.0, dst);
+                aura_brush.SetTransform(&mat);
+                aura_brush.SetOpacity(opacity * 0.54);
+                canvas.ctx.FillRoundedRectangle(&rounded, aura_brush);
             } else {
                 // Giữ độ đầm kính khói tối đầy đủ khi không có aura (Settings/Slim/chờ) để tránh lóa trên nền trắng.
                 self.brushes.glass_fill.SetStartPoint(start);
                 self.brushes.glass_fill.SetEndPoint(end);
                 self.brushes.glass_fill.SetOpacity(opacity);
-                self.d2d_context
+                canvas
+                    .ctx
                     .FillRoundedRectangle(&rounded, &self.brushes.glass_fill);
             }
 
@@ -1015,19 +1297,21 @@ impl IslandRenderer {
             self.ambient_glow_brush
                 .SetRadiusY((pill.height * 0.96).max(24.0));
             self.ambient_glow_brush.SetOpacity(opacity * glow_scale);
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&rounded, &self.ambient_glow_brush);
 
             self.brushes.glass_sheen.SetStartPoint(start);
             self.brushes.glass_sheen.SetEndPoint(end);
             self.brushes.glass_sheen.SetOpacity(opacity);
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&rounded, &self.brushes.glass_sheen);
 
             self.brushes.glass_inner_rim.SetStartPoint(start);
             self.brushes.glass_inner_rim.SetEndPoint(end);
             self.brushes.glass_inner_rim.SetOpacity(opacity);
-            self.d2d_context.DrawRoundedRectangle(
+            canvas.ctx.DrawRoundedRectangle(
                 &inner_rim_rect,
                 &self.brushes.glass_inner_rim,
                 0.9,
@@ -1035,7 +1319,7 @@ impl IslandRenderer {
             );
 
             self.brushes.glass_edge_shadow.SetOpacity(opacity);
-            self.d2d_context.DrawRoundedRectangle(
+            canvas.ctx.DrawRoundedRectangle(
                 &rounded,
                 &self.brushes.glass_edge_shadow,
                 2.0,
@@ -1045,70 +1329,89 @@ impl IslandRenderer {
             self.brushes.glass_border.SetStartPoint(start);
             self.brushes.glass_border.SetEndPoint(end);
             self.brushes.glass_border.SetOpacity(opacity);
-            self.d2d_context
+            canvas
+                .ctx
                 .DrawRoundedRectangle(&rounded, &self.brushes.glass_border, 1.15, None);
         }
     }
 
-    unsafe fn draw_clipped_contents(&mut self, input: &RenderFrameInput<'_>) {
-        let inner_rounded = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: input.pill.left + 1.0,
-                top: input.pill.top + 1.0,
-                right: input.pill.left + input.pill.width - 1.0,
-                bottom: input.pill.top + input.pill.height - 1.0,
-            },
-            radiusX: (input.pill.corner_radius - 1.0).max(1.0),
-            radiusY: (input.pill.corner_radius - 1.0).max(1.0),
-        };
+    unsafe fn draw_clipped_contents(
+        &mut self,
+        canvas: DrawCanvas<'_>,
+        input: &RenderFrameInput<'_>,
+        effective_alpha: f32,
+    ) {
+        let (target_w, target_h, target_r, _) = target_dimensions_for_mode(input.mode);
+        let need_clip = effective_alpha < 0.995
+            || (input.pill.width - target_w).abs() > 0.5
+            || (input.pill.height - target_h).abs() > 0.5
+            || (input.pill.corner_radius - target_r).abs() > 0.25;
 
-        let Ok(geom) = (unsafe {
-            self.d2d_factory
-                .CreateRoundedRectangleGeometry(&inner_rounded)
-        }) else {
-            return;
-        };
-        let Ok(geom_base): windows::core::Result<ID2D1Geometry> = geom.cast() else {
-            return;
-        };
+        if need_clip {
+            let inner_rounded = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: input.pill.left + 1.0,
+                    top: input.pill.top + 1.0,
+                    right: input.pill.left + input.pill.width - 1.0,
+                    bottom: input.pill.top + input.pill.height - 1.0,
+                },
+                radiusX: (input.pill.corner_radius - 1.0).max(1.0),
+                radiusY: (input.pill.corner_radius - 1.0).max(1.0),
+            };
 
-        let mut layer_params = D2D1_LAYER_PARAMETERS1 {
-            contentBounds: inner_rounded.rect,
-            geometricMask: ManuallyDrop::new(Some(geom_base)),
-            maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-            maskTransform: Matrix3x2::identity(),
-            opacity: input.content_alpha.clamp(0.0, 1.0),
-            opacityBrush: ManuallyDrop::new(None),
-            layerOptions: D2D1_LAYER_OPTIONS1_NONE,
-        };
+            let Ok(geom) = (unsafe {
+                self.d2d_factory
+                    .CreateRoundedRectangleGeometry(&inner_rounded)
+            }) else {
+                return;
+            };
+            let Ok(geom_base): windows::core::Result<ID2D1Geometry> = geom.cast() else {
+                return;
+            };
 
-        unsafe {
-            self.d2d_context.PushLayer(&layer_params, &self.clip_layer);
-            // Giải phóng refcount ManuallyDrop ngay sau PushLayer để không rò rỉ đối tượng COM.
-            ManuallyDrop::drop(&mut layer_params.geometricMask);
-            ManuallyDrop::drop(&mut layer_params.opacityBrush);
+            let mut layer_params = D2D1_LAYER_PARAMETERS1 {
+                contentBounds: inner_rounded.rect,
+                geometricMask: ManuallyDrop::new(Some(geom_base)),
+                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                maskTransform: Matrix3x2::identity(),
+                opacity: effective_alpha.clamp(0.0, 1.0),
+                opacityBrush: ManuallyDrop::new(None),
+                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
+            };
+
+            unsafe {
+                canvas.ctx.PushLayer(&layer_params, &self.clip_layer);
+                // Giải phóng refcount ManuallyDrop ngay sau PushLayer để không rò rỉ đối tượng COM.
+                ManuallyDrop::drop(&mut layer_params.geometricMask);
+                ManuallyDrop::drop(&mut layer_params.opacityBrush);
+            }
         }
 
         match input.mode {
-            IslandMode::Slim => unsafe { self.draw_slim(input) },
-            IslandMode::Compact => unsafe { self.draw_compact(input) },
-            IslandMode::Expanded => unsafe { self.draw_expanded(input) },
-            IslandMode::Settings => unsafe { self.draw_settings(input) },
+            IslandMode::Slim => unsafe { self.draw_slim(canvas, input) },
+            IslandMode::Compact => unsafe { self.draw_compact(canvas, input) },
+            IslandMode::Expanded => unsafe { self.draw_expanded(canvas, input) },
+            IslandMode::Settings => unsafe { self.draw_settings(canvas, input) },
+            IslandMode::AudioDevices => unsafe { self.draw_audio_devices(canvas, input) },
+            IslandMode::Notice => unsafe { self.draw_notice(canvas, input) },
             IslandMode::Hidden => {}
         }
 
-        unsafe {
-            self.d2d_context.PopLayer();
+        if need_clip {
+            unsafe {
+                canvas.ctx.PopLayer();
+            }
         }
     }
 
-    unsafe fn draw_slim(&mut self, input: &RenderFrameInput<'_>) {
+    unsafe fn draw_slim(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
         let p = input.pill;
         let art_size = 10.0;
         let art_x = p.left + 8.0;
         let art_y = p.top + (p.height - art_size) * 0.5;
         unsafe {
             self.draw_artwork_or_placeholder(
+                canvas,
                 art_x,
                 art_y,
                 art_size,
@@ -1136,7 +1439,8 @@ impl IslandRenderer {
             radiusY: track_h * 0.5,
         };
         unsafe {
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&bg_bar, &self.brushes.switch_off);
         }
 
@@ -1163,13 +1467,14 @@ impl IslandRenderer {
                 radiusY: track_h * 0.5,
             };
             unsafe {
-                self.d2d_context.FillRoundedRectangle(&fg_bar, fill_brush);
+                canvas.ctx.FillRoundedRectangle(&fg_bar, fill_brush);
             }
         }
 
         if vis_active {
             unsafe {
-                self.draw_visualizer_bars_sized(
+                self.draw_visualizer_bars_count(
+                    canvas,
                     p.left + p.width - 20.0,
                     cy,
                     input.visualizer_phase,
@@ -1177,84 +1482,738 @@ impl IslandRenderer {
                     6.5,
                     4.0,
                     2.2,
+                    3,
                 );
             }
         }
     }
 
-    unsafe fn draw_compact(&mut self, input: &RenderFrameInput<'_>) {
-        let p = input.pill;
-        let art_size = 22.0;
-        let art_x = p.left + 10.0;
+    unsafe fn draw_compact(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
+        if let Some(hud) = input.active_hud {
+            unsafe {
+                self.draw_compact_hud(canvas, input, hud);
+            }
+            return;
+        }
+        let (cw, ch, _, _) = target_dimensions_for_mode(IslandMode::Compact);
+        let p = virtual_pill_anchored(input.pill, cw, ch, true);
+        let art_size = 26.0;
+        let art_x = p.left + 7.0;
         let art_y = p.top + (p.height - art_size) * 0.5;
         unsafe {
-            self.draw_artwork_or_placeholder(art_x, art_y, art_size, 7.0, input.media.is_playing);
-        }
-
-        let vis_w = if input.config.visualizer_enabled && input.media.is_playing {
-            24.0
-        } else {
-            10.0
-        };
-        let text_left = art_x + art_size + 10.0;
-        let text_right = (p.left + p.width - 12.0 - vis_w).max(text_left + 20.0);
-        let label = if input.media.has_session {
-            input.media.title.as_str()
-        } else {
-            "Sẵn sàng - Bấm để mở rộng"
-        };
-        let compact_fmt = self.fonts.compact.clone();
-        let text_primary = self.brushes.text_primary.clone();
-        unsafe {
-            self.draw_text(
-                label,
-                &compact_fmt,
-                &text_primary,
-                UiRectDip {
-                    left: text_left,
-                    top: p.top + 4.0,
-                    right: text_right,
-                    bottom: p.top + p.height - 4.0,
-                },
+            self.draw_artwork_with_rim(
+                canvas,
+                art_x,
+                art_y,
+                art_size,
+                art_size * 0.5,
+                input.media.is_playing,
+                true,
             );
         }
 
-        if input.config.visualizer_enabled && input.media.is_playing {
+        let content_left = art_x + art_size + 9.0;
+        let content_right = (p.left + p.width - 38.0).max(content_left + 40.0);
+        let cy = p.top + p.height * 0.5;
+        let right_cap_cx = p.left + p.width - 20.0;
+
+        let text_primary = self.brushes.text_primary.clone();
+        let text_secondary = self.brushes.text_secondary.clone();
+        let accent = self.brushes.accent.clone();
+
+        if input.media.has_session {
+            let sub_label = if !input.media.artist.trim().is_empty() {
+                input.media.artist.as_str()
+            } else if !input.media.source_app.trim().is_empty() {
+                input.media.source_app.as_str()
+            } else if input.media.is_playing {
+                "Đang phát"
+            } else {
+                "Đã tạm dừng"
+            };
             unsafe {
-                self.draw_visualizer_bars(
-                    p.left + p.width - 28.0,
-                    p.top + p.height * 0.5,
-                    input.visualizer_phase,
+                self.draw_text(
+                    canvas,
+                    &input.media.title,
+                    TextFormatSlot::Compact,
+                    &text_primary,
+                    UiRectDip {
+                        left: content_left,
+                        top: p.top + 4.5,
+                        right: content_right,
+                        bottom: p.top + 20.5,
+                    },
+                );
+                self.draw_text(
+                    canvas,
+                    sub_label,
+                    TextFormatSlot::CompactSub,
+                    &text_secondary,
+                    UiRectDip {
+                        left: content_left,
+                        top: p.top + 19.5,
+                        right: content_right,
+                        bottom: p.top + 32.0,
+                    },
+                );
+            }
+
+            let tl = input.media.timeline;
+            if tl.available && tl.duration_ticks() > 0 {
+                let ratio = tl.progress_ratio(
+                    current_windows_filetime_ticks(),
+                    input.media.is_playing,
+                );
+                let bar_top = p.top + p.height - 5.4;
+                let bar_bot = p.top + p.height - 3.4;
+                let bg = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: content_left,
+                        top: bar_top,
+                        right: content_right,
+                        bottom: bar_bot,
+                    },
+                    radiusX: 1.0,
+                    radiusY: 1.0,
+                };
+                unsafe {
+                    canvas
+                        .ctx
+                        .FillRoundedRectangle(&bg, &self.brushes.switch_off);
+                }
+                let track_w = (content_right - content_left).max(1.0);
+                let fill_w = (track_w * ratio).clamp(0.0, track_w);
+                if fill_w > 0.8 {
+                    let fg = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: content_left,
+                            top: bar_top,
+                            right: (content_left + fill_w.max(2.0)).min(content_right),
+                            bottom: bar_bot,
+                        },
+                        radiusX: 1.0,
+                        radiusY: 1.0,
+                    };
+                    let fill_brush = if input.media.is_playing {
+                        &self.brushes.accent
+                    } else {
+                        &self.brushes.text_secondary
+                    };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&fg, fill_brush);
+                    }
+                }
+            }
+
+            if input.config.visualizer_enabled && input.media.is_playing {
+                unsafe {
+                    self.draw_visualizer_bars(
+                        canvas,
+                        right_cap_cx - 9.1,
+                        cy,
+                        input.visualizer_phase,
+                    );
+                }
+            } else if !input.media.is_playing {
+                for dx in [-2.8_f32, 2.8_f32] {
+                    let bar = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: right_cap_cx + dx - 1.2,
+                            top: cy - 5.2,
+                            right: right_cap_cx + dx + 1.2,
+                            bottom: cy + 5.2,
+                        },
+                        radiusX: 1.2,
+                        radiusY: 1.2,
+                    };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&bar, &text_secondary);
+                    }
+                }
+            } else {
+                unsafe {
+                    self.draw_centered_triangle(
+                        canvas,
+                        &self.icons.play_triangle,
+                        right_cap_cx + 0.5,
+                        cy,
+                        2.1,
+                        &accent,
+                    );
+                }
+            }
+        } else {
+            unsafe {
+                self.draw_text(
+                    canvas,
+                    "Win Dynamic Island",
+                    TextFormatSlot::Compact,
+                    &text_primary,
+                    UiRectDip {
+                        left: content_left,
+                        top: p.top + 5.0,
+                        right: content_right,
+                        bottom: p.top + 21.0,
+                    },
+                );
+                self.draw_text(
+                    canvas,
+                    "Bấm để mở rộng hoặc cuộn chỉnh loa",
+                    TextFormatSlot::CompactSub,
+                    &text_secondary,
+                    UiRectDip {
+                        left: content_left,
+                        top: p.top + 20.0,
+                        right: content_right,
+                        bottom: p.top + 34.0,
+                    },
+                );
+            }
+            let outer = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: right_cap_cx - 5.5,
+                    top: cy - 5.5,
+                    right: right_cap_cx + 5.5,
+                    bottom: cy + 5.5,
+                },
+                radiusX: 5.5,
+                radiusY: 5.5,
+            };
+            let inner = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: right_cap_cx - 2.6,
+                    top: cy - 2.6,
+                    right: right_cap_cx + 2.6,
+                    bottom: cy + 2.6,
+                },
+                radiusX: 2.6,
+                radiusY: 2.6,
+            };
+            unsafe {
+                canvas
+                    .ctx
+                    .FillRoundedRectangle(&outer, &self.brushes.accent_soft);
+                canvas.ctx.FillRoundedRectangle(&inner, &accent);
+            }
+        }
+    }
+
+    unsafe fn draw_compact_hud(
+        &mut self,
+        canvas: DrawCanvas<'_>,
+        input: &RenderFrameInput<'_>,
+        hud: HudContent,
+    ) {
+        let (cw, ch, _, _) = target_dimensions_for_mode(IslandMode::Compact);
+        let p = virtual_pill_anchored(input.pill, cw, ch, true);
+        match hud {
+            HudContent::Volume {
+                level,
+                muted,
+                show_device_name,
+            } => {
+                let display_level = input.volume_scrub_ratio.unwrap_or(level).clamp(0.0, 1.0);
+                let is_dragging = input.volume_scrub_ratio.is_some();
+                fill_volume_hud_hitboxes(p, &mut self.hitbox_scratch);
+                let mute_rect = self
+                    .hitbox_scratch
+                    .iter()
+                    .find(|hb| hb.action == UiAction::ToggleVolumeMute)
+                    .map(|hb| hb.rect)
+                    .unwrap_or(UiRectDip {
+                        left: p.left + 6.0,
+                        top: p.top + 3.0,
+                        right: p.left + 36.0,
+                        bottom: p.top + p.height - 3.0,
+                    });
+                let slider_rect = self
+                    .hitbox_scratch
+                    .iter()
+                    .find(|hb| hb.action == UiAction::SeekVolume)
+                    .map(|hb| hb.rect)
+                    .unwrap_or(UiRectDip {
+                        left: p.left + 44.0,
+                        top: p.top + 2.0,
+                        right: p.left + p.width - 50.0,
+                        bottom: p.top + p.height - 2.0,
+                    });
+
+                let mute_hovered = input.hovered_action == Some(UiAction::ToggleVolumeMute);
+                if mute_hovered {
+                    let pill_btn = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: mute_rect.left,
+                            top: mute_rect.top,
+                            right: mute_rect.right,
+                            bottom: mute_rect.bottom,
+                        },
+                        radiusX: 12.0,
+                        radiusY: 12.0,
+                    };
+                    unsafe {
+                        canvas
+                            .ctx
+                            .FillRoundedRectangle(&pill_btn, &self.brushes.surface_hover);
+                    }
+                }
+
+                let cx = mute_rect.left + mute_rect.width() * 0.5;
+                let cy = mute_rect.top + mute_rect.height() * 0.5;
+                let speaker_brush = if muted {
+                    &self.brushes.danger_border
+                } else {
+                    &self.brushes.text_primary
+                };
+                unsafe {
+                    self.draw_speaker_icon(canvas, cx, cy, display_level, muted, speaker_brush);
+                }
+
+                let dev_label = if show_device_name && !is_dragging {
+                    input
+                        .current_audio_device_name
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                } else {
+                    None
+                };
+
+                if let Some(dev_name) = dev_label {
+                    let text_primary = self.brushes.text_primary.clone();
+                    unsafe {
+                        self.draw_text(
+                            canvas,
+                            dev_name,
+                            TextFormatSlot::SmallLeft,
+                            &text_primary,
+                            UiRectDip {
+                                left: slider_rect.left,
+                                top: p.top + 4.5,
+                                right: slider_rect.right,
+                                bottom: p.top + p.height - 10.5,
+                            },
+                        );
+                    }
+                    let bar_top = p.top + p.height - 7.8;
+                    let bar_bot = p.top + p.height - 5.0;
+                    let bar_bg = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: slider_rect.left,
+                            top: bar_top,
+                            right: slider_rect.right,
+                            bottom: bar_bot,
+                        },
+                        radiusX: 1.3,
+                        radiusY: 1.3,
+                    };
+                    unsafe {
+                        canvas
+                            .ctx
+                            .FillRoundedRectangle(&bar_bg, &self.brushes.switch_off);
+                    }
+                    if display_level > 0.004 {
+                        let fill_w = (slider_rect.width() * display_level).max(2.6);
+                        let bar_fg = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: slider_rect.left,
+                                top: bar_top,
+                                right: (slider_rect.left + fill_w).min(slider_rect.right),
+                                bottom: bar_bot,
+                            },
+                            radiusX: 1.3,
+                            radiusY: 1.3,
+                        };
+                        let fill_brush = if muted {
+                            &self.brushes.danger_border
+                        } else {
+                            &self.brushes.accent
+                        };
+                        unsafe {
+                            canvas.ctx.FillRoundedRectangle(&bar_fg, fill_brush);
+                        }
+                    }
+                } else {
+                    let slider_hovered = input.hovered_action == Some(UiAction::SeekVolume);
+                    let track_h = if is_dragging {
+                        6.5
+                    } else if slider_hovered {
+                        5.5
+                    } else {
+                        4.4
+                    };
+                    let bg_bar = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: slider_rect.left,
+                            top: cy - track_h * 0.5,
+                            right: slider_rect.right,
+                            bottom: cy + track_h * 0.5,
+                        },
+                        radiusX: track_h * 0.5,
+                        radiusY: track_h * 0.5,
+                    };
+                    unsafe {
+                        canvas
+                            .ctx
+                            .FillRoundedRectangle(&bg_bar, &self.brushes.switch_off);
+                    }
+
+                    if display_level > 0.004 {
+                        let fill_w = (slider_rect.width() * display_level).max(track_h);
+                        let fg_bar = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: slider_rect.left,
+                                top: cy - track_h * 0.5,
+                                right: (slider_rect.left + fill_w).min(slider_rect.right),
+                                bottom: cy + track_h * 0.5,
+                            },
+                            radiusX: track_h * 0.5,
+                            radiusY: track_h * 0.5,
+                        };
+                        let fill_brush = if muted {
+                            &self.brushes.danger_border
+                        } else {
+                            &self.brushes.accent
+                        };
+                        unsafe {
+                            canvas.ctx.FillRoundedRectangle(&fg_bar, fill_brush);
+                        }
+                    }
+
+                    if slider_hovered || is_dragging {
+                        let knob_r = if is_dragging { 6.2 } else { 5.2 };
+                        let knob_x = (slider_rect.left + slider_rect.width() * display_level)
+                            .clamp(slider_rect.left + knob_r, slider_rect.right - knob_r);
+                        let halo_r = knob_r + 3.0;
+                        let halo = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: knob_x - halo_r,
+                                top: cy - halo_r,
+                                right: knob_x + halo_r,
+                                bottom: cy + halo_r,
+                            },
+                            radiusX: halo_r,
+                            radiusY: halo_r,
+                        };
+                        let knob = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: knob_x - knob_r,
+                                top: cy - knob_r,
+                                right: knob_x + knob_r,
+                                bottom: cy + knob_r,
+                            },
+                            radiusX: knob_r,
+                            radiusY: knob_r,
+                        };
+                        unsafe {
+                            canvas
+                                .ctx
+                                .FillRoundedRectangle(&halo, &self.brushes.accent_soft);
+                            canvas.ctx.FillRoundedRectangle(&knob, &self.brushes.knob);
+                        }
+                    }
+                }
+
+                let label = if muted {
+                    String::from("Tắt")
+                } else {
+                    format!("{}%", (display_level * 100.0).round() as u32)
+                };
+                let pct_brush = if muted {
+                    self.brushes.danger_border.clone()
+                } else {
+                    self.brushes.text_primary.clone()
+                };
+                unsafe {
+                    self.draw_text(
+                        canvas,
+                        &label,
+                        TextFormatSlot::SmallRight,
+                        &pct_brush,
+                        UiRectDip {
+                            left: slider_rect.right + 4.0,
+                            top: p.top + 4.0,
+                            right: p.left + p.width - 12.0,
+                            bottom: p.top + p.height - 4.0,
+                        },
+                    );
+                }
+            }
+            HudContent::Power {
+                on_ac,
+                percent,
+                low_battery,
+            } => {
+                let cy = p.top + p.height * 0.5;
+                let fill_brush = if on_ac {
+                    &self.brushes.power_ok
+                } else if low_battery {
+                    &self.brushes.power_warn
+                } else {
+                    &self.brushes.accent
+                };
+                let pct_ratio = percent.map_or(0.5, |v| (v as f32 / 100.0).clamp(0.08, 1.0));
+                unsafe {
+                    self.draw_battery_icon(canvas, p.left + 21.0, cy, pct_ratio, on_ac, fill_brush);
+                }
+
+                let status_text = if on_ac {
+                    "Đang cắm sạc"
+                } else if low_battery {
+                    "Pin yếu"
+                } else {
+                    "Đang dùng pin"
+                };
+                let pct_label = percent.map_or_else(|| String::from("--%"), |v| format!("{v}%"));
+                let text_primary = self.brushes.text_primary.clone();
+                let accent_brush = fill_brush.clone();
+                unsafe {
+                    self.draw_text(
+                        canvas,
+                        status_text,
+                        TextFormatSlot::Compact,
+                        &text_primary,
+                        UiRectDip {
+                            left: p.left + 38.0,
+                            top: p.top + 4.0,
+                            right: p.left + p.width - 54.0,
+                            bottom: p.top + p.height - 4.0,
+                        },
+                    );
+                    self.draw_text(
+                        canvas,
+                        &pct_label,
+                        TextFormatSlot::SmallRight,
+                        &accent_brush,
+                        UiRectDip {
+                            left: p.left + p.width - 54.0,
+                            top: p.top + 4.0,
+                            right: p.left + p.width - 12.0,
+                            bottom: p.top + p.height - 4.0,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    unsafe fn draw_speaker_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        level: f32,
+        muted: bool,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let box_rect = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 7.5,
+                top: cy - 2.6,
+                right: cx - 3.6,
+                bottom: cy + 2.6,
+            },
+            radiusX: 1.0,
+            radiusY: 1.0,
+        };
+        unsafe {
+            canvas.ctx.FillRoundedRectangle(&box_rect, brush);
+        }
+        if let Ok(base) = self.icons.speaker_cone.cast::<ID2D1Geometry>() {
+            canvas.set_local_translation(cx - 2.4, cy);
+            unsafe {
+                canvas.ctx.FillGeometry(&base, brush, None);
+                canvas
+                    .ctx
+                    .DrawGeometry(&base, brush, 1.4, &self.icons.round_stroke);
+            }
+            canvas.reset_transform();
+        }
+        if muted {
+            unsafe {
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx + 2.0,
+                        Y: cy - 3.2,
+                    },
+                    Vector2 {
+                        X: cx + 7.2,
+                        Y: cy + 3.2,
+                    },
+                    brush,
+                    1.7,
+                    Some(&self.icons.round_stroke),
+                );
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx + 7.2,
+                        Y: cy - 3.2,
+                    },
+                    Vector2 {
+                        X: cx + 2.0,
+                        Y: cy + 3.2,
+                    },
+                    brush,
+                    1.7,
+                    Some(&self.icons.round_stroke),
+                );
+            }
+        } else {
+            if level > 0.02 {
+                let w1 = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: cx + 2.4,
+                        top: cy - 2.6,
+                        right: cx + 4.1,
+                        bottom: cy + 2.6,
+                    },
+                    radiusX: 0.85,
+                    radiusY: 0.85,
+                };
+                unsafe {
+                    canvas.ctx.FillRoundedRectangle(&w1, brush);
+                }
+            }
+            if level >= 0.45 {
+                let w2 = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: cx + 5.3,
+                        top: cy - 4.6,
+                        right: cx + 7.0,
+                        bottom: cy + 4.6,
+                    },
+                    radiusX: 0.85,
+                    radiusY: 0.85,
+                };
+                unsafe {
+                    canvas.ctx.FillRoundedRectangle(&w2, brush);
+                }
+            }
+        }
+    }
+
+    unsafe fn draw_battery_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        ratio: f32,
+        on_ac: bool,
+        fill_brush: &ID2D1SolidColorBrush,
+    ) {
+        let body = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 10.0,
+                top: cy - 5.5,
+                right: cx + 7.0,
+                bottom: cy + 5.5,
+            },
+            radiusX: 2.5,
+            radiusY: 2.5,
+        };
+        let nub = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx + 7.5,
+                top: cy - 2.4,
+                right: cx + 9.6,
+                bottom: cy + 2.4,
+            },
+            radiusX: 1.0,
+            radiusY: 1.0,
+        };
+        let inner_max_w = 13.4_f32;
+        let inner_w = (inner_max_w * ratio.clamp(0.08, 1.0)).max(2.0);
+        let fill = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 8.2,
+                top: cy - 3.7,
+                right: cx - 8.2 + inner_w,
+                bottom: cy + 3.7,
+            },
+            radiusX: 1.4,
+            radiusY: 1.4,
+        };
+        unsafe {
+            canvas.ctx.FillRoundedRectangle(&fill, fill_brush);
+            canvas.ctx.DrawRoundedRectangle(
+                &body,
+                &self.brushes.text_secondary,
+                1.25,
+                None,
+            );
+            canvas
+                .ctx
+                .FillRoundedRectangle(&nub, &self.brushes.text_secondary);
+            if on_ac {
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx - 1.2,
+                        Y: cy - 3.2,
+                    },
+                    Vector2 {
+                        X: cx - 3.0,
+                        Y: cy + 0.2,
+                    },
+                    &self.brushes.text_primary,
+                    1.3,
+                    Some(&self.icons.round_stroke),
+                );
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx - 3.0,
+                        Y: cy + 0.2,
+                    },
+                    Vector2 {
+                        X: cx + 0.6,
+                        Y: cy + 0.2,
+                    },
+                    &self.brushes.text_primary,
+                    1.3,
+                    Some(&self.icons.round_stroke),
+                );
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx + 0.6,
+                        Y: cy + 0.2,
+                    },
+                    Vector2 {
+                        X: cx - 1.2,
+                        Y: cy + 3.4,
+                    },
+                    &self.brushes.text_primary,
+                    1.3,
+                    Some(&self.icons.round_stroke),
                 );
             }
         }
     }
 
-    unsafe fn draw_expanded(&mut self, input: &RenderFrameInput<'_>) {
-        let p = input.pill;
+    unsafe fn draw_expanded(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
+        let p = virtual_pill_anchored(input.pill, 416.0, 160.0, false);
         let art_size = 64.0;
         let art_x = p.left + 18.0;
         let art_y = p.top + 16.0;
         unsafe {
-            self.draw_artwork_or_placeholder(art_x, art_y, art_size, 14.0, input.media.is_playing);
+            self.draw_artwork_or_placeholder(
+                canvas,
+                art_x,
+                art_y,
+                art_size,
+                14.0,
+                input.media.is_playing,
+            );
         }
 
         let text_left = art_x + art_size + 14.0;
         let text_right = p.left + p.width - 80.0;
 
-        let title_fmt = self.fonts.title.clone();
-        let subtitle_fmt = self.fonts.subtitle.clone();
-        let small_fmt = self.fonts.small.clone();
-        let small_left_fmt = self.fonts.small_left.clone();
-        let small_right_fmt = self.fonts.small_right.clone();
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
         let accent = self.brushes.accent.clone();
 
         unsafe {
             self.draw_text(
+                canvas,
                 &input.media.title,
-                &title_fmt,
+                TextFormatSlot::Title,
                 &text_primary,
                 UiRectDip {
                     left: text_left,
@@ -1264,8 +2223,9 @@ impl IslandRenderer {
                 },
             );
             self.draw_text(
+                canvas,
                 &input.media.artist,
-                &subtitle_fmt,
+                TextFormatSlot::Subtitle,
                 &text_secondary,
                 UiRectDip {
                     left: text_left,
@@ -1291,8 +2251,9 @@ impl IslandRenderer {
         };
         unsafe {
             self.draw_text(
+                canvas,
                 status_label,
-                &small_left_fmt,
+                TextFormatSlot::SmallLeft,
                 &accent,
                 UiRectDip {
                     left: text_left,
@@ -1330,8 +2291,9 @@ impl IslandRenderer {
 
         unsafe {
             self.draw_text(
+                canvas,
                 &pos_label,
-                &small_left_fmt,
+                TextFormatSlot::SmallLeft,
                 &text_secondary,
                 UiRectDip {
                     left: p.left + 18.0,
@@ -1341,8 +2303,9 @@ impl IslandRenderer {
                 },
             );
             self.draw_text(
+                canvas,
                 &dur_label,
-                &small_right_fmt,
+                TextFormatSlot::SmallRight,
                 &text_secondary,
                 UiRectDip {
                     left: p.left + p.width - 58.0,
@@ -1361,6 +2324,7 @@ impl IslandRenderer {
             if hb.action == UiAction::SeekTimeline {
                 unsafe {
                     self.draw_timeline_bar(
+                        canvas,
                         hb.rect,
                         ratio,
                         input.media.has_session && tl.available,
@@ -1389,11 +2353,54 @@ impl IslandRenderer {
                 radiusY: radius,
             };
             unsafe {
-                self.d2d_context.FillRoundedRectangle(&card, fill);
+                canvas.ctx.FillRoundedRectangle(&card, fill);
             }
             if hb.action == UiAction::OpenSettings {
                 unsafe {
-                    self.draw_text("Cài đặt", &small_fmt, &text_primary, hb.rect);
+                    self.draw_text(
+                        canvas,
+                        "Cài đặt",
+                        TextFormatSlot::Small,
+                        &text_primary,
+                        hb.rect,
+                    );
+                }
+            } else if hb.action == UiAction::OpenAudioDevices {
+                let speaker_brush = if input.volume_snapshot.muted {
+                    self.brushes.danger_border.clone()
+                } else {
+                    accent.clone()
+                };
+                let dev_label = input
+                    .current_audio_device_name
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Âm thanh");
+                unsafe {
+                    self.draw_speaker_icon(
+                        canvas,
+                        hb.rect.left + 15.0,
+                        hb.rect.top + hb.rect.height() * 0.5,
+                        if input.volume_snapshot.available {
+                            input.volume_snapshot.level
+                        } else {
+                            0.6
+                        },
+                        input.volume_snapshot.muted,
+                        &speaker_brush,
+                    );
+                    self.draw_text(
+                        canvas,
+                        dev_label,
+                        TextFormatSlot::SmallLeft,
+                        &text_primary,
+                        UiRectDip {
+                            left: hb.rect.left + 28.0,
+                            top: hb.rect.top,
+                            right: hb.rect.right - 8.0,
+                            bottom: hb.rect.bottom,
+                        },
+                    );
                 }
             } else {
                 let icon_brush = if input.media.has_session {
@@ -1403,6 +2410,7 @@ impl IslandRenderer {
                 };
                 unsafe {
                     self.draw_media_action_icon(
+                        canvas,
                         hb.action,
                         hb.rect,
                         input.media.is_playing,
@@ -1415,6 +2423,7 @@ impl IslandRenderer {
 
     unsafe fn draw_media_action_icon(
         &self,
+        canvas: DrawCanvas<'_>,
         action: UiAction,
         rect: UiRectDip,
         is_playing: bool,
@@ -1436,12 +2445,19 @@ impl IslandRenderer {
                         radiusY: 1.7,
                     };
                     unsafe {
-                        self.d2d_context.FillRoundedRectangle(&bar, brush);
+                        canvas.ctx.FillRoundedRectangle(&bar, brush);
                     }
                 }
             }
             UiAction::MediaPlayPause => unsafe {
-                self.draw_centered_triangle(&self.icons.play_triangle, cx + 0.8, cy, 2.6, brush);
+                self.draw_centered_triangle(
+                    canvas,
+                    &self.icons.play_triangle,
+                    cx + 0.8,
+                    cy,
+                    2.6,
+                    brush,
+                );
             },
             UiAction::MediaPrev => {
                 let bar = D2D1_ROUNDED_RECT {
@@ -1455,8 +2471,15 @@ impl IslandRenderer {
                     radiusY: 1.2,
                 };
                 unsafe {
-                    self.d2d_context.FillRoundedRectangle(&bar, brush);
-                    self.draw_centered_triangle(&self.icons.prev_triangle, cx + 1.8, cy, 2.2, brush);
+                    canvas.ctx.FillRoundedRectangle(&bar, brush);
+                    self.draw_centered_triangle(
+                        canvas,
+                        &self.icons.prev_triangle,
+                        cx + 1.8,
+                        cy,
+                        2.2,
+                        brush,
+                    );
                 }
             }
             UiAction::MediaNext => {
@@ -1471,8 +2494,15 @@ impl IslandRenderer {
                     radiusY: 1.2,
                 };
                 unsafe {
-                    self.d2d_context.FillRoundedRectangle(&bar, brush);
-                    self.draw_centered_triangle(&self.icons.next_triangle, cx - 1.8, cy, 2.2, brush);
+                    canvas.ctx.FillRoundedRectangle(&bar, brush);
+                    self.draw_centered_triangle(
+                        canvas,
+                        &self.icons.next_triangle,
+                        cx - 1.8,
+                        cy,
+                        2.2,
+                        brush,
+                    );
                 }
             }
             _ => {}
@@ -1481,6 +2511,7 @@ impl IslandRenderer {
 
     unsafe fn draw_centered_triangle(
         &self,
+        canvas: DrawCanvas<'_>,
         geom: &ID2D1PathGeometry,
         cx: f32,
         cy: f32,
@@ -1490,19 +2521,19 @@ impl IslandRenderer {
         let Ok(base) = geom.cast::<ID2D1Geometry>() else {
             return;
         };
-        let translate = Matrix3x2::translation(cx, cy);
-        let identity = Matrix3x2::identity();
+        canvas.set_local_translation(cx, cy);
         unsafe {
-            self.d2d_context.SetTransform(&translate);
-            self.d2d_context.FillGeometry(&base, brush, None);
-            self.d2d_context
+            canvas.ctx.FillGeometry(&base, brush, None);
+            canvas
+                .ctx
                 .DrawGeometry(&base, brush, round_stroke_w, &self.icons.round_stroke);
-            self.d2d_context.SetTransform(&identity);
         }
+        canvas.reset_transform();
     }
 
     unsafe fn draw_timeline_bar(
         &self,
+        canvas: DrawCanvas<'_>,
         rect: UiRectDip,
         ratio: f32,
         active: bool,
@@ -1528,7 +2559,8 @@ impl IslandRenderer {
             radiusY: track_h * 0.5,
         };
         unsafe {
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&bg_bar, &self.brushes.switch_off);
         }
 
@@ -1549,7 +2581,8 @@ impl IslandRenderer {
             radiusY: track_h * 0.5,
         };
         unsafe {
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&fg_bar, &self.brushes.accent);
         }
 
@@ -1575,7 +2608,8 @@ impl IslandRenderer {
                 radiusY: halo_r,
             };
             unsafe {
-                self.d2d_context
+                canvas
+                    .ctx
                     .FillRoundedRectangle(&halo, &self.brushes.accent_soft);
             }
         }
@@ -1590,24 +2624,20 @@ impl IslandRenderer {
             radiusY: knob_r,
         };
         unsafe {
-            self.d2d_context
-                .FillRoundedRectangle(&knob, &self.brushes.knob);
+            canvas.ctx.FillRoundedRectangle(&knob, &self.brushes.knob);
         }
     }
 
-    unsafe fn draw_settings(&mut self, input: &RenderFrameInput<'_>) {
-        let p = input.pill;
-        let title_fmt = self.fonts.title.clone();
-        let btn_center_fmt = self.fonts.button_center.clone();
-        let btn_fmt = self.fonts.button.clone();
-        let small_fmt = self.fonts.small.clone();
+    unsafe fn draw_settings(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
+        let p = virtual_pill_anchored(input.pill, 424.0, 298.0, false);
         let text_primary = self.brushes.text_primary.clone();
         let accent = self.brushes.accent.clone();
 
         unsafe {
             self.draw_text(
+                canvas,
                 "Bảng điều khiển nhanh",
-                &title_fmt,
+                TextFormatSlot::Title,
                 &text_primary,
                 UiRectDip {
                     left: p.left + 18.0,
@@ -1647,16 +2677,16 @@ impl IslandRenderer {
                 radiusY: 10.0,
             };
             unsafe {
-                self.d2d_context.FillRoundedRectangle(&card, fill);
+                canvas.ctx.FillRoundedRectangle(&card, fill);
                 if is_danger {
-                    self.d2d_context.DrawRoundedRectangle(
+                    canvas.ctx.DrawRoundedRectangle(
                         &card,
                         &self.brushes.danger_border,
                         1.0,
                         None,
                     );
                 } else {
-                    self.d2d_context.DrawRoundedRectangle(
+                    canvas.ctx.DrawRoundedRectangle(
                         &card,
                         &self.brushes.card_border,
                         0.85,
@@ -1667,50 +2697,83 @@ impl IslandRenderer {
 
             match hb.action {
                 UiAction::BackToMedia => unsafe {
-                    self.draw_text("Quay lại", &btn_center_fmt, &accent, hb.rect);
+                    self.draw_text(
+                        canvas,
+                        "Quay lại",
+                        TextFormatSlot::ButtonCenter,
+                        &accent,
+                        hb.rect,
+                    );
                 },
                 UiAction::ToggleNotchCollapse => unsafe {
                     self.draw_toggle_tile(
+                        canvas,
                         hb.rect,
                         "Gọn mép 4s",
                         input.config.notch_collapse_after_4s,
-                        &btn_fmt,
+                        &text_primary,
+                    );
+                },
+                UiAction::ToggleHudVolume => unsafe {
+                    self.draw_toggle_tile(
+                        canvas,
+                        hb.rect,
+                        "HUD Âm lượng",
+                        input.config.hud_volume_enabled,
+                        &text_primary,
+                    );
+                },
+                UiAction::ToggleHudWheel => unsafe {
+                    self.draw_toggle_tile(
+                        canvas,
+                        hb.rect,
+                        "Cuộn chỉnh loa",
+                        input.config.hud_wheel_enabled,
+                        &text_primary,
+                    );
+                },
+                UiAction::ToggleHudPower => unsafe {
+                    self.draw_toggle_tile(
+                        canvas,
+                        hb.rect,
+                        "HUD Pin / Sạc",
+                        input.config.hud_power_enabled,
                         &text_primary,
                     );
                 },
                 UiAction::ToggleAutoHideIdle => unsafe {
                     self.draw_toggle_tile(
+                        canvas,
                         hb.rect,
                         "Tự ẩn khi rảnh",
                         input.config.auto_hide_when_idle,
-                        &btn_fmt,
                         &text_primary,
                     );
                 },
                 UiAction::ToggleAutoHideFullscreen => unsafe {
                     self.draw_toggle_tile(
+                        canvas,
                         hb.rect,
                         "Ẩn toàn màn hình",
                         input.config.auto_hide_fullscreen,
-                        &btn_fmt,
                         &text_primary,
                     );
                 },
                 UiAction::ToggleVisualizer => unsafe {
                     self.draw_toggle_tile(
+                        canvas,
                         hb.rect,
                         "Sóng nhạc động",
                         input.config.visualizer_enabled,
-                        &btn_fmt,
                         &text_primary,
                     );
                 },
                 UiAction::ToggleAutostart => unsafe {
                     self.draw_toggle_tile(
+                        canvas,
                         hb.rect,
                         "Mở cùng Windows",
                         input.config.autostart,
-                        &btn_fmt,
                         &text_primary,
                     );
                 },
@@ -1718,8 +2781,9 @@ impl IslandRenderer {
                     let label = format!("Màn hình: {}", input.monitor_label);
                     unsafe {
                         self.draw_text(
+                            canvas,
                             &label,
-                            &btn_fmt,
+                            TextFormatSlot::Button,
                             &text_primary,
                             UiRectDip {
                                 left: hb.rect.left + 12.0,
@@ -1729,8 +2793,9 @@ impl IslandRenderer {
                             },
                         );
                         self.draw_text(
+                            canvas,
                             "Đổi",
-                            &small_fmt,
+                            TextFormatSlot::Small,
                             &accent,
                             UiRectDip {
                                 left: hb.rect.right - 64.0,
@@ -1742,22 +2807,506 @@ impl IslandRenderer {
                     }
                 }
                 UiAction::HideIsland => unsafe {
-                    self.draw_text("Ẩn tạm", &btn_center_fmt, &text_primary, hb.rect);
+                    self.draw_text(
+                        canvas,
+                        "Ẩn tạm",
+                        TextFormatSlot::ButtonCenter,
+                        &text_primary,
+                        hb.rect,
+                    );
                 },
                 UiAction::ExitApp => unsafe {
-                    self.draw_text("Thoát ứng dụng", &btn_center_fmt, &text_primary, hb.rect);
+                    self.draw_text(
+                        canvas,
+                        "Thoát ứng dụng",
+                        TextFormatSlot::ButtonCenter,
+                        &text_primary,
+                        hb.rect,
+                    );
                 },
                 _ => {}
             }
         }
     }
 
+    unsafe fn draw_audio_devices(
+        &mut self,
+        canvas: DrawCanvas<'_>,
+        input: &RenderFrameInput<'_>,
+    ) {
+        let p = virtual_pill_anchored(input.pill, 424.0, 284.0, false);
+        let text_primary = self.brushes.text_primary.clone();
+        let text_secondary = self.brushes.text_secondary.clone();
+        let accent = self.brushes.accent.clone();
+
+        let total = input.audio_devices.len();
+        let max_scroll = total.saturating_sub(MAX_AUDIO_DEVICES_VISIBLE);
+        let start = input.audio_device_scroll.min(max_scroll);
+        let end = (start + MAX_AUDIO_DEVICES_VISIBLE).min(total);
+        let visible_count = end.saturating_sub(start);
+
+        let vol_status = if !input.volume_snapshot.available {
+            String::from("Chưa có dịch vụ âm thanh")
+        } else if input.volume_snapshot.muted {
+            format!(
+                "Đang tắt tiếng ({}%)",
+                (input.volume_snapshot.level * 100.0).round() as u32
+            )
+        } else {
+            format!(
+                "Âm lượng thiết bị hiện tại: {}%",
+                (input.volume_snapshot.level * 100.0).round() as u32
+            )
+        };
+
+        unsafe {
+            self.draw_text(
+                canvas,
+                "Thiết bị phát âm thanh",
+                TextFormatSlot::Title,
+                &text_primary,
+                UiRectDip {
+                    left: p.left + 18.0,
+                    top: p.top + 10.0,
+                    right: p.left + p.width - 96.0,
+                    bottom: p.top + 32.0,
+                },
+            );
+            self.draw_text(
+                canvas,
+                &vol_status,
+                TextFormatSlot::SmallLeft,
+                &text_secondary,
+                UiRectDip {
+                    left: p.left + 18.0,
+                    top: p.top + 32.0,
+                    right: p.left + p.width - 96.0,
+                    bottom: p.top + 49.0,
+                },
+            );
+        }
+
+        fill_audio_devices_hitboxes(p, visible_count, &mut self.hitbox_scratch);
+        let count = self.hitbox_scratch.len();
+        for idx in 0..count {
+            let hb = self.hitbox_scratch[idx];
+            let hovered = input.hovered_action == Some(hb.action);
+            let card = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: hb.rect.left,
+                    top: hb.rect.top,
+                    right: hb.rect.right,
+                    bottom: hb.rect.bottom,
+                },
+                radiusX: 10.0,
+                radiusY: 10.0,
+            };
+
+            match hb.action {
+                UiAction::BackToMedia => {
+                    let fill = if hovered {
+                        &self.brushes.surface_hover
+                    } else {
+                        &self.brushes.surface_card
+                    };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&card, fill);
+                        canvas.ctx.DrawRoundedRectangle(
+                            &card,
+                            &self.brushes.card_border,
+                            0.85,
+                            None,
+                        );
+                        self.draw_text(
+                            canvas,
+                            "Quay lại",
+                            TextFormatSlot::ButtonCenter,
+                            &accent,
+                            hb.rect,
+                        );
+                    }
+                }
+                UiAction::SelectAudioDevice(rel_idx) => {
+                    let Some(dev) = input.audio_devices.get(start + rel_idx) else {
+                        continue;
+                    };
+                    let is_default = dev.is_default;
+                    let fill = if hovered {
+                        &self.brushes.surface_hover
+                    } else if is_default {
+                        &self.brushes.accent_soft
+                    } else {
+                        &self.brushes.surface_card
+                    };
+                    let border_brush = if is_default {
+                        &self.brushes.accent
+                    } else {
+                        &self.brushes.card_border
+                    };
+                    let border_w = if is_default { 1.1 } else { 0.85 };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&card, fill);
+                        canvas.ctx.DrawRoundedRectangle(&card, border_brush, border_w, None);
+                    }
+
+                    let icon_brush = if is_default {
+                        if input.volume_snapshot.muted {
+                            self.brushes.danger_border.clone()
+                        } else {
+                            accent.clone()
+                        }
+                    } else {
+                        text_secondary.clone()
+                    };
+                    let icon_level = if is_default {
+                        input.volume_snapshot.level
+                    } else {
+                        0.65
+                    };
+                    let icon_muted = is_default && input.volume_snapshot.muted;
+                    let name_text = dev.name.clone();
+                    let cy = hb.rect.top + hb.rect.height() * 0.5;
+                    let text_right = if is_default {
+                        hb.rect.right - 82.0
+                    } else {
+                        hb.rect.right - 14.0
+                    };
+                    unsafe {
+                        self.draw_speaker_icon(
+                            canvas,
+                            hb.rect.left + 19.0,
+                            cy,
+                            icon_level,
+                            icon_muted,
+                            &icon_brush,
+                        );
+                        self.draw_text(
+                            canvas,
+                            &name_text,
+                            TextFormatSlot::Button,
+                            &text_primary,
+                            UiRectDip {
+                                left: hb.rect.left + 35.0,
+                                top: hb.rect.top,
+                                right: text_right,
+                                bottom: hb.rect.bottom,
+                            },
+                        );
+                        if is_default {
+                            self.draw_text(
+                                canvas,
+                                "Đang dùng",
+                                TextFormatSlot::SmallRight,
+                                &accent,
+                                UiRectDip {
+                                    left: hb.rect.right - 78.0,
+                                    top: hb.rect.top,
+                                    right: hb.rect.right - 12.0,
+                                    bottom: hb.rect.bottom,
+                                },
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if total == 0 {
+            let empty_card = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: p.left + 16.0,
+                    top: p.top + 56.0,
+                    right: p.left + p.width - 16.0,
+                    bottom: p.top + 96.0,
+                },
+                radiusX: 10.0,
+                radiusY: 10.0,
+            };
+            unsafe {
+                canvas
+                    .ctx
+                    .FillRoundedRectangle(&empty_card, &self.brushes.surface_card);
+                self.draw_text(
+                    canvas,
+                    "Chưa phát hiện thiết bị phát âm thanh",
+                    TextFormatSlot::ButtonCenter,
+                    &text_secondary,
+                    UiRectDip {
+                        left: empty_card.rect.left,
+                        top: empty_card.rect.top,
+                        right: empty_card.rect.right,
+                        bottom: empty_card.rect.bottom,
+                    },
+                );
+            }
+        } else if total > MAX_AUDIO_DEVICES_VISIBLE {
+            let hint = format!("Cuộn chuột để xem thêm ({}-{total}/{total})", start + 1);
+            let _ = end;
+            unsafe {
+                self.draw_text(
+                    canvas,
+                    &hint,
+                    TextFormatSlot::Small,
+                    &text_secondary,
+                    UiRectDip {
+                        left: p.left + 16.0,
+                        top: p.top + 265.0,
+                        right: p.left + p.width - 16.0,
+                        bottom: p.top + 281.0,
+                    },
+                );
+            }
+        }
+    }
+
+    unsafe fn draw_notice(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
+        let Some(notice) = input.notice else {
+            return;
+        };
+        let p = virtual_pill_anchored(input.pill, 416.0, 136.0, false);
+        let text_primary = self.brushes.text_primary.clone();
+        let text_secondary = self.brushes.text_secondary.clone();
+        let accent_brush = match notice.kind {
+            NoticeKind::UpToDate => self.brushes.power_ok.clone(),
+            NoticeKind::Error => self.brushes.danger_border.clone(),
+            NoticeKind::Checking | NoticeKind::UpdateAvailable | NoticeKind::Downloading => {
+                self.brushes.accent.clone()
+            }
+        };
+        let badge_fill = if notice.kind == NoticeKind::Error {
+            self.brushes.danger_bg.clone()
+        } else {
+            self.brushes.surface_card.clone()
+        };
+
+        let cx = p.left + 35.0;
+        let cy = p.top + 42.0;
+        let badge_r = 17.5;
+        let badge = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - badge_r,
+                top: cy - badge_r,
+                right: cx + badge_r,
+                bottom: cy + badge_r,
+            },
+            radiusX: badge_r,
+            radiusY: badge_r,
+        };
+        unsafe {
+            canvas.ctx.FillRoundedRectangle(&badge, &badge_fill);
+            canvas
+                .ctx
+                .DrawRoundedRectangle(&badge, &accent_brush, 1.25, None);
+            self.draw_notice_glyph(canvas, cx, cy, notice.kind, &accent_brush);
+            self.draw_text(
+                canvas,
+                notice.title,
+                TextFormatSlot::Title,
+                &text_primary,
+                UiRectDip {
+                    left: p.left + 64.0,
+                    top: p.top + 14.0,
+                    right: p.left + p.width - 18.0,
+                    bottom: p.top + 36.0,
+                },
+            );
+            self.draw_text(
+                canvas,
+                notice.message,
+                TextFormatSlot::BodyLeft,
+                &text_secondary,
+                UiRectDip {
+                    left: p.left + 64.0,
+                    top: p.top + 38.0,
+                    right: p.left + p.width - 18.0,
+                    bottom: p.top + 88.0,
+                },
+            );
+        }
+
+        fill_notice_hitboxes(p, notice.secondary_label.is_some(), &mut self.hitbox_scratch);
+        let count = self.hitbox_scratch.len();
+        for idx in 0..count {
+            let hb = self.hitbox_scratch[idx];
+            let hovered = input.hovered_action == Some(hb.action);
+            let card = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: hb.rect.left,
+                    top: hb.rect.top,
+                    right: hb.rect.right,
+                    bottom: hb.rect.bottom,
+                },
+                radiusX: 11.0,
+                radiusY: 11.0,
+            };
+            match hb.action {
+                UiAction::NoticePrimary => {
+                    let is_err = notice.kind == NoticeKind::Error;
+                    let fill = if is_err {
+                        if hovered {
+                            &self.brushes.danger_hover
+                        } else {
+                            &self.brushes.danger_bg
+                        }
+                    } else if hovered {
+                        &self.brushes.surface_hover
+                    } else {
+                        &self.brushes.accent_soft
+                    };
+                    let border = if is_err {
+                        &self.brushes.danger_border
+                    } else {
+                        &self.brushes.accent
+                    };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&card, fill);
+                        canvas.ctx.DrawRoundedRectangle(&card, border, 1.0, None);
+                        self.draw_text(
+                            canvas,
+                            notice.primary_label,
+                            TextFormatSlot::ButtonCenter,
+                            &text_primary,
+                            hb.rect,
+                        );
+                    }
+                }
+                UiAction::NoticeSecondary => {
+                    let label = notice.secondary_label.unwrap_or("Đóng");
+                    let fill = if hovered {
+                        &self.brushes.surface_hover
+                    } else {
+                        &self.brushes.surface_card
+                    };
+                    unsafe {
+                        canvas.ctx.FillRoundedRectangle(&card, fill);
+                        canvas.ctx.DrawRoundedRectangle(
+                            &card,
+                            &self.brushes.card_border,
+                            0.85,
+                            None,
+                        );
+                        self.draw_text(
+                            canvas,
+                            label,
+                            TextFormatSlot::ButtonCenter,
+                            &text_secondary,
+                            hb.rect,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    unsafe fn draw_notice_glyph(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        kind: NoticeKind,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let stroke = Some(&self.icons.round_stroke);
+        unsafe {
+            match kind {
+                NoticeKind::UpToDate => {
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx - 5.5, Y: cy + 0.4 },
+                        Vector2 { X: cx - 1.5, Y: cy + 4.4 },
+                        brush,
+                        2.1,
+                        stroke,
+                    );
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx - 1.5, Y: cy + 4.4 },
+                        Vector2 { X: cx + 6.0, Y: cy - 4.4 },
+                        brush,
+                        2.1,
+                        stroke,
+                    );
+                }
+                NoticeKind::UpdateAvailable | NoticeKind::Downloading => {
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx, Y: cy - 6.2 },
+                        Vector2 { X: cx, Y: cy + 3.4 },
+                        brush,
+                        2.0,
+                        stroke,
+                    );
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx - 4.4, Y: cy - 0.6 },
+                        Vector2 { X: cx, Y: cy + 3.8 },
+                        brush,
+                        2.0,
+                        stroke,
+                    );
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx + 4.4, Y: cy - 0.6 },
+                        Vector2 { X: cx, Y: cy + 3.8 },
+                        brush,
+                        2.0,
+                        stroke,
+                    );
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx - 5.5, Y: cy + 6.8 },
+                        Vector2 { X: cx + 5.5, Y: cy + 6.8 },
+                        brush,
+                        1.8,
+                        stroke,
+                    );
+                }
+                NoticeKind::Checking => {
+                    let dot = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: cx - 1.3,
+                            top: cy - 6.2,
+                            right: cx + 1.3,
+                            bottom: cy - 3.6,
+                        },
+                        radiusX: 1.3,
+                        radiusY: 1.3,
+                    };
+                    canvas.ctx.FillRoundedRectangle(&dot, brush);
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx, Y: cy - 1.2 },
+                        Vector2 { X: cx, Y: cy + 6.0 },
+                        brush,
+                        2.1,
+                        stroke,
+                    );
+                }
+                NoticeKind::Error => {
+                    canvas.ctx.DrawLine(
+                        Vector2 { X: cx, Y: cy - 6.0 },
+                        Vector2 { X: cx, Y: cy + 1.8 },
+                        brush,
+                        2.2,
+                        stroke,
+                    );
+                    let dot = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: cx - 1.4,
+                            top: cy + 4.4,
+                            right: cx + 1.4,
+                            bottom: cy + 7.2,
+                        },
+                        radiusX: 1.4,
+                        radiusY: 1.4,
+                    };
+                    canvas.ctx.FillRoundedRectangle(&dot, brush);
+                }
+            }
+        }
+    }
+
     unsafe fn draw_toggle_tile(
         &mut self,
+        canvas: DrawCanvas<'_>,
         rect: UiRectDip,
         label: &str,
         enabled: bool,
-        font: &IDWriteTextFormat,
         text_brush: &ID2D1SolidColorBrush,
     ) {
         let text_rect = UiRectDip {
@@ -1767,7 +3316,7 @@ impl IslandRenderer {
             bottom: rect.bottom,
         };
         unsafe {
-            self.draw_text(label, font, text_brush, text_rect);
+            self.draw_text(canvas, label, TextFormatSlot::Button, text_brush, text_rect);
         }
 
         let sw_w = 30.0;
@@ -1790,7 +3339,7 @@ impl IslandRenderer {
             &self.brushes.switch_off
         };
         unsafe {
-            self.d2d_context.FillRoundedRectangle(&track, track_brush);
+            canvas.ctx.FillRoundedRectangle(&track, track_brush);
         }
 
         let knob_size = 12.0;
@@ -1811,22 +3360,38 @@ impl IslandRenderer {
             radiusY: knob_size * 0.5,
         };
         unsafe {
-            self.d2d_context
-                .FillRoundedRectangle(&knob, &self.brushes.knob);
+            canvas.ctx.FillRoundedRectangle(&knob, &self.brushes.knob);
         }
     }
 
     unsafe fn draw_artwork_or_placeholder(
         &self,
+        canvas: DrawCanvas<'_>,
         x: f32,
         y: f32,
         size: f32,
         radius: f32,
         is_playing: bool,
     ) {
-        let Some(art_bmp) = &self.artwork_bitmap else {
+        unsafe {
+            self.draw_artwork_with_rim(canvas, x, y, size, radius, is_playing, false);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn draw_artwork_with_rim(
+        &self,
+        canvas: DrawCanvas<'_>,
+        x: f32,
+        y: f32,
+        size: f32,
+        radius: f32,
+        is_playing: bool,
+        soft_rim: bool,
+    ) {
+        let Some(art_brush) = &self.artwork_brush else {
             unsafe {
-                self.draw_placeholder_art(x, y, size, radius, is_playing);
+                self.draw_placeholder_art(canvas, x, y, size, radius, is_playing);
             }
             return;
         };
@@ -1842,47 +3407,34 @@ impl IslandRenderer {
             radiusY: radius,
         };
 
-        if let Ok(geom) = unsafe { self.d2d_factory.CreateRoundedRectangleGeometry(&box_rect) }
-            && let Ok(geom_base) = geom.cast::<ID2D1Geometry>()
-            && let Ok(bmp_base) = art_bmp.cast::<ID2D1Bitmap>()
-        {
-            let mut layer_params = D2D1_LAYER_PARAMETERS1 {
-                contentBounds: box_rect.rect,
-                geometricMask: ManuallyDrop::new(Some(geom_base)),
-                maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-                maskTransform: Matrix3x2::identity(),
-                opacity: 1.0,
-                opacityBrush: ManuallyDrop::new(None),
-                layerOptions: D2D1_LAYER_OPTIONS1_NONE,
-            };
-
-            unsafe {
-                self.d2d_context
-                    .PushLayer(&layer_params, &self.artwork_layer);
-                ManuallyDrop::drop(&mut layer_params.geometricMask);
-                ManuallyDrop::drop(&mut layer_params.opacityBrush);
-                let src_rect = compute_center_crop_rect(self.artwork_size_px);
-                self.d2d_context.DrawBitmap(
-                    &bmp_base,
-                    Some(&box_rect.rect),
-                    1.0,
-                    D2D1_INTERPOLATION_MODE_LINEAR,
-                    src_rect.as_ref().map(|r| r as *const D2D_RECT_F),
-                    None,
-                );
-                self.d2d_context.PopLayer();
-                self.d2d_context
+        let (src_l, src_t, src_r, src_b) = match compute_center_crop_rect(self.artwork_size_px) {
+            Some(r) => (r.left, r.top, r.right, r.bottom),
+            None => (
+                0.0,
+                0.0,
+                self.artwork_size_px.0.max(1) as f32,
+                self.artwork_size_px.1.max(1) as f32,
+            ),
+        };
+        let mat = bitmap_rect_transform(src_l, src_t, src_r, src_b, box_rect.rect);
+        unsafe {
+            art_brush.SetTransform(&mat);
+            canvas.ctx.FillRoundedRectangle(&box_rect, art_brush);
+            if soft_rim {
+                canvas
+                    .ctx
+                    .DrawRoundedRectangle(&box_rect, &self.brushes.glass_inner_rim, 1.0, None);
+            } else {
+                canvas
+                    .ctx
                     .DrawRoundedRectangle(&box_rect, &self.brushes.border, 1.0, None);
-            }
-        } else {
-            unsafe {
-                self.draw_placeholder_art(x, y, size, radius, is_playing);
             }
         }
     }
 
     unsafe fn draw_placeholder_art(
         &self,
+        canvas: DrawCanvas<'_>,
         x: f32,
         y: f32,
         size: f32,
@@ -1900,9 +3452,11 @@ impl IslandRenderer {
             radiusY: radius,
         };
         unsafe {
-            self.d2d_context
+            canvas
+                .ctx
                 .FillRoundedRectangle(&box_rect, &self.brushes.art_bg);
-            self.d2d_context
+            canvas
+                .ctx
                 .DrawRoundedRectangle(&box_rect, &self.brushes.border, 1.0, None);
         }
 
@@ -1925,19 +3479,36 @@ impl IslandRenderer {
             &self.brushes.text_secondary
         };
         unsafe {
-            self.d2d_context.FillRoundedRectangle(&core, brush);
+            canvas.ctx.FillRoundedRectangle(&core, brush);
         }
     }
 
-    unsafe fn draw_visualizer_bars(&self, start_x: f32, center_y: f32, phase: f32) {
+    unsafe fn draw_visualizer_bars(
+        &self,
+        canvas: DrawCanvas<'_>,
+        start_x: f32,
+        center_y: f32,
+        phase: f32,
+    ) {
         unsafe {
-            self.draw_visualizer_bars_sized(start_x, center_y, phase, 4.0, 12.0, 5.0, 3.0);
+            self.draw_visualizer_bars_count(
+                canvas,
+                start_x,
+                center_y,
+                phase,
+                3.2,
+                11.6,
+                4.0,
+                2.2,
+                5,
+            );
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    unsafe fn draw_visualizer_bars_sized(
+    unsafe fn draw_visualizer_bars_count(
         &self,
+        canvas: DrawCanvas<'_>,
         start_x: f32,
         center_y: f32,
         phase: f32,
@@ -1945,10 +3516,13 @@ impl IslandRenderer {
         amp_h: f32,
         step_x: f32,
         bar_w: f32,
+        count: usize,
     ) {
-        for i in 0..3 {
-            let wave = ((phase + i as f32 * 1.6).sin() * 0.5 + 0.5).clamp(0.2, 1.0);
-            let h = min_h + wave * amp_h;
+        const ENVELOPE_5: [f32; 5] = [0.55, 0.88, 1.0, 0.88, 0.55];
+        for (i, &env5) in ENVELOPE_5.iter().enumerate().take(count) {
+            let env = if count == 5 { env5 } else { 1.0 };
+            let wave = ((phase + i as f32 * 1.35).sin() * 0.5 + 0.5).clamp(0.22, 1.0);
+            let h = min_h + wave * amp_h * env;
             let bx = start_x + i as f32 * step_x;
             let bar = D2D1_ROUNDED_RECT {
                 rect: D2D_RECT_F {
@@ -1961,36 +3535,58 @@ impl IslandRenderer {
                 radiusY: bar_w * 0.5,
             };
             unsafe {
-                self.d2d_context
-                    .FillRoundedRectangle(&bar, &self.brushes.accent);
+                canvas.ctx.FillRoundedRectangle(&bar, &self.brushes.accent);
             }
         }
     }
 
     unsafe fn draw_text(
         &mut self,
+        canvas: DrawCanvas<'_>,
         text: &str,
-        format: &IDWriteTextFormat,
+        slot: TextFormatSlot,
         brush: &ID2D1SolidColorBrush,
         rect: UiRectDip,
     ) {
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        self.utf16_scratch.clear();
-        self.utf16_scratch.extend(text.encode_utf16());
-        let Ok(layout) = (unsafe {
-            self.dwrite_factory.CreateTextLayout(
-                &self.utf16_scratch,
-                format,
-                rect.width(),
-                rect.height(),
-            )
-        }) else {
-            return;
+        let w_tenth = (rect.width() * 10.0).round() as i32;
+        let h_tenth = (rect.height() * 10.0).round() as i32;
+
+        let layout = if let Some(idx) = self.text_cache.iter().position(|e| {
+            e.slot == slot && e.w_tenth == w_tenth && e.h_tenth == h_tenth && e.text == text
+        }) {
+            self.text_cache[idx].layout.clone()
+        } else {
+            self.utf16_scratch.clear();
+            self.utf16_scratch.extend(text.encode_utf16());
+            let format = self.fonts.by_slot(slot);
+            let Ok(created) = (unsafe {
+                self.dwrite_factory.CreateTextLayout(
+                    &self.utf16_scratch,
+                    format,
+                    rect.width(),
+                    rect.height(),
+                )
+            }) else {
+                return;
+            };
+            if self.text_cache.len() >= 32 {
+                self.text_cache.remove(0);
+            }
+            self.text_cache.push(TextLayoutCacheEntry {
+                slot,
+                text: text.to_owned(),
+                w_tenth,
+                h_tenth,
+                layout: created.clone(),
+            });
+            created
         };
+
         unsafe {
-            self.d2d_context.DrawTextLayout(
+            canvas.ctx.DrawTextLayout(
                 Vector2 {
                     X: rect.left,
                     Y: rect.top + 0.6,
@@ -1999,7 +3595,7 @@ impl IslandRenderer {
                 &self.brushes.text_shadow,
                 D2D1_DRAW_TEXT_OPTIONS_CLIP,
             );
-            self.d2d_context.DrawTextLayout(
+            canvas.ctx.DrawTextLayout(
                 Vector2 {
                     X: rect.left,
                     Y: rect.top,
@@ -2010,32 +3606,30 @@ impl IslandRenderer {
             );
         }
     }
+}
 
-    fn attach_backbuffer(&mut self, dpi_scale: f32) -> windows::core::Result<()> {
-        let surface: IDXGISurface = unsafe { self.swap_chain.GetBuffer(0) }?;
-        let dpi = 96.0 * dpi_scale;
-        let props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: dpi,
-            dpiY: dpi,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            ..Default::default()
-        };
+fn attach_swapchain_backbuffer(
+    d2d_context: &ID2D1DeviceContext,
+    swap_chain: &IDXGISwapChain1,
+) -> windows::core::Result<ID2D1Bitmap1> {
+    let surface: IDXGISurface = unsafe { swap_chain.GetBuffer(0) }?;
+    let props = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+        ..Default::default()
+    };
 
-        let bitmap = unsafe {
-            self.d2d_context
-                .CreateBitmapFromDxgiSurface(&surface, Some(&props))
-        }?;
-        let image: ID2D1Image = bitmap.cast()?;
-        unsafe {
-            self.d2d_context.SetTarget(&image);
-        }
-        self.target_bitmap = Some(bitmap);
-        Ok(())
+    let bitmap = unsafe { d2d_context.CreateBitmapFromDxgiSurface(&surface, Some(&props)) }?;
+    let image: ID2D1Image = bitmap.cast()?;
+    unsafe {
+        d2d_context.SetTarget(&image);
     }
+    Ok(bitmap)
 }
 
 fn create_icon_geometries(factory: &ID2D1Factory1) -> windows::core::Result<IconGeometries> {
@@ -2067,13 +3661,41 @@ fn create_icon_geometries(factory: &ID2D1Factory1) -> windows::core::Result<Icon
         Vector2 { X: 3.8, Y: 0.0 },
         Vector2 { X: -3.8, Y: 4.4 },
     )?;
+    let speaker_cone = make_quad_geometry(
+        factory,
+        Vector2 { X: -2.0, Y: -2.4 },
+        Vector2 { X: 2.2, Y: -5.0 },
+        Vector2 { X: 2.2, Y: 5.0 },
+        Vector2 { X: -2.0, Y: 2.4 },
+    )?;
 
     Ok(IconGeometries {
         round_stroke,
         play_triangle,
         prev_triangle,
         next_triangle,
+        speaker_cone,
     })
+}
+
+fn make_quad_geometry(
+    factory: &ID2D1Factory1,
+    p0: Vector2,
+    p1: Vector2,
+    p2: Vector2,
+    p3: Vector2,
+) -> windows::core::Result<ID2D1PathGeometry> {
+    let path = unsafe { factory.CreatePathGeometry() }?;
+    let sink = unsafe { path.Open() }?;
+    unsafe {
+        sink.BeginFigure(p0, D2D1_FIGURE_BEGIN_FILLED);
+        sink.AddLine(p1);
+        sink.AddLine(p2);
+        sink.AddLine(p3);
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink.Close()?;
+    }
+    Ok(path.into())
 }
 
 fn make_triangle_geometry(
@@ -2504,6 +4126,8 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
         danger_bg: make(0.58, 0.10, 0.13, 0.64)?,
         danger_hover: make(0.74, 0.15, 0.18, 0.78)?,
         danger_border: make(0.96, 0.44, 0.46, 0.56)?,
+        power_ok: make(0.36, 0.90, 0.56, 1.0)?,
+        power_warn: make(0.98, 0.52, 0.28, 1.0)?,
         art_bg: make(0.10, 0.12, 0.18, 0.75)?,
     })
 }
@@ -2515,48 +4139,80 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
             13.5,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         subtitle: make_format(
             factory,
             11.5,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
+        )?,
+        body_left: make_format(
+            factory,
+            11.5,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+            DWRITE_WORD_WRAPPING_WRAP,
         )?,
         compact: make_format(
             factory,
-            12.0,
-            DWRITE_FONT_WEIGHT_MEDIUM,
+            11.8,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
+        )?,
+        compact_sub: make_format(
+            factory,
+            10.0,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         button: make_format(
             factory,
             11.5,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         button_center: make_format(
             factory,
             11.5,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_CENTER,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         small: make_format(
             factory,
             10.5,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_CENTER,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         small_left: make_format(
             factory,
             10.5,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_LEADING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
         small_right: make_format(
             factory,
             10.5,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_TRAILING,
+            DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+            DWRITE_WORD_WRAPPING_NO_WRAP,
         )?,
     })
 }
@@ -2566,6 +4222,8 @@ fn make_format(
     size: f32,
     weight: windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT,
     align: DWRITE_TEXT_ALIGNMENT,
+    paragraph_align: DWRITE_PARAGRAPH_ALIGNMENT,
+    wrapping: DWRITE_WORD_WRAPPING,
 ) -> windows::core::Result<IDWriteTextFormat> {
     let family = to_wide_null("Segoe UI Variable Text");
     let locale = to_wide_null("vi-VN");
@@ -2583,8 +4241,8 @@ fn make_format(
 
     unsafe {
         fmt.SetTextAlignment(align)?;
-        fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+        fmt.SetParagraphAlignment(paragraph_align)?;
+        fmt.SetWordWrapping(wrapping)?;
         let trimming_sign: IDWriteInlineObject = factory.CreateEllipsisTrimmingSign(&fmt)?;
         let trimming = DWRITE_TRIMMING {
             granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
@@ -2594,6 +4252,73 @@ fn make_format(
         fmt.SetTrimming(&trimming, &trimming_sign)?;
     }
     Ok(fmt)
+}
+
+fn mode_content_reveal_alpha(pill: PillRectDip, mode: IslandMode) -> f32 {
+    match mode {
+        IslandMode::Hidden => 0.0,
+        IslandMode::Slim => {
+            let w_fade = ((235.0 - pill.width) / 55.0).clamp(0.0, 1.0);
+            let h_fade = ((46.0 - pill.height) / 18.0).clamp(0.0, 1.0);
+            w_fade.min(h_fade)
+        }
+        IslandMode::Compact => {
+            let w_fade = ((pill.width - 176.0) / 72.0).clamp(0.0, 1.0);
+            let h_fade = ((88.0 - pill.height) / 42.0).clamp(0.0, 1.0);
+            w_fade.min(h_fade)
+        }
+        IslandMode::Expanded | IslandMode::Notice => {
+            let grow_fade = ((pill.height - 58.0) / 52.0).clamp(0.0, 1.0);
+            let shrink_fade = ((245.0 - pill.height) / 60.0).clamp(0.0, 1.0);
+            grow_fade.min(shrink_fade)
+        }
+        IslandMode::Settings | IslandMode::AudioDevices => {
+            ((pill.height - 175.0) / 80.0).clamp(0.0, 1.0)
+        }
+    }
+}
+
+fn virtual_pill_anchored(
+    pill: PillRectDip,
+    target_w: f32,
+    target_h: f32,
+    center_y: bool,
+) -> PillRectDip {
+    let top = if center_y {
+        pill.top + ((pill.height - target_h) * 0.5).clamp(-10.0, 0.0)
+    } else {
+        pill.top
+    };
+    PillRectDip {
+        left: pill.left + (pill.width - target_w) * 0.5,
+        top,
+        width: target_w,
+        height: target_h,
+        corner_radius: pill.corner_radius,
+    }
+}
+
+fn bitmap_rect_transform(
+    src_left: f32,
+    src_top: f32,
+    src_right: f32,
+    src_bottom: f32,
+    dst: D2D_RECT_F,
+) -> Matrix3x2 {
+    let sw = (src_right - src_left).max(1.0);
+    let sh = (src_bottom - src_top).max(1.0);
+    let dw = (dst.right - dst.left).max(1.0);
+    let dh = (dst.bottom - dst.top).max(1.0);
+    let sx = dw / sw;
+    let sy = dh / sh;
+    Matrix3x2 {
+        M11: sx,
+        M12: 0.0,
+        M21: 0.0,
+        M22: sy,
+        M31: dst.left - src_left * sx,
+        M32: dst.top - src_top * sy,
+    }
 }
 
 fn compute_center_crop_rect((w, h): (u32, u32)) -> Option<D2D_RECT_F> {
@@ -2773,14 +4498,44 @@ mod tests {
         );
 
         let media = MediaDisplayState::default();
+        let sample_devices = vec![
+            AudioOutputDevice {
+                id: String::from("dev-1"),
+                name: String::from("Speakers (Realtek Audio)"),
+                is_default: true,
+            },
+            AudioOutputDevice {
+                id: String::from("dev-2"),
+                name: String::from("Headphones (USB DAC)"),
+                is_default: false,
+            },
+        ];
+        let vol_snap = VolumeSnapshot {
+            level: 0.64,
+            muted: false,
+            available: true,
+        };
         for mode in [
             IslandMode::Slim,
             IslandMode::Compact,
             IslandMode::Expanded,
             IslandMode::Settings,
+            IslandMode::AudioDevices,
+            IslandMode::Notice,
             IslandMode::Hidden,
         ] {
             let pill = IslandAnimator::new(mode).current_pill();
+            let sample_notice = if mode == IslandMode::Notice {
+                Some(IslandNoticeView {
+                    kind: NoticeKind::UpToDate,
+                    title: "Đã là bản mới nhất",
+                    message: "Bạn đang sử dụng phiên bản mới nhất (v0.1.3).",
+                    primary_label: "Đã hiểu",
+                    secondary_label: None,
+                })
+            } else {
+                None
+            };
             let input = RenderFrameInput {
                 pill,
                 mode,
@@ -2788,12 +4543,54 @@ mod tests {
                 content_alpha: if mode == IslandMode::Hidden { 0.0 } else { 1.0 },
                 config: AppConfig::default(),
                 media: &media,
+                active_hud: None,
+                volume_scrub_ratio: None,
                 hovered_action: None,
                 timeline_scrub_ratio: None,
                 monitor_label: "M1",
                 visualizer_phase: 0.4,
+                audio_devices: &sample_devices,
+                audio_device_scroll: 0,
+                volume_snapshot: vol_snap,
+                current_audio_device_name: Some("Speakers (Realtek Audio)"),
+                notice: sample_notice,
             };
             renderer.render(&input).expect("renderer.render");
+        }
+        for (kind, sec) in [
+            (NoticeKind::Checking, None),
+            (NoticeKind::UpdateAvailable, Some("Để sau")),
+            (NoticeKind::Downloading, None),
+            (NoticeKind::Error, Some("Thử lại")),
+        ] {
+            let notice_input = RenderFrameInput {
+                pill: IslandAnimator::new(IslandMode::Notice).current_pill(),
+                mode: IslandMode::Notice,
+                pill_opacity: 1.0,
+                content_alpha: 1.0,
+                config: AppConfig::default(),
+                media: &media,
+                active_hud: None,
+                volume_scrub_ratio: None,
+                hovered_action: Some(UiAction::NoticePrimary),
+                timeline_scrub_ratio: None,
+                monitor_label: "M1",
+                visualizer_phase: 0.0,
+                audio_devices: &[],
+                audio_device_scroll: 0,
+                volume_snapshot: vol_snap,
+                current_audio_device_name: None,
+                notice: Some(IslandNoticeView {
+                    kind,
+                    title: "Kiểm tra thông báo",
+                    message: "Nội dung thông báo mẫu nhiều dòng hiển thị đẹp trên thẻ kính khói.",
+                    primary_label: "Cập nhật ngay",
+                    secondary_label: sec,
+                }),
+            };
+            renderer
+                .render(&notice_input)
+                .expect("render IslandNoticeView");
         }
         let sample_art = DecodedArtwork {
             width: 32,
@@ -2819,14 +4616,52 @@ mod tests {
             content_alpha: 1.0,
             config: AppConfig::default(),
             media: &active_media,
+            active_hud: None,
+            volume_scrub_ratio: None,
             hovered_action: None,
             timeline_scrub_ratio: None,
             monitor_label: "M1",
             visualizer_phase: 0.4,
+            audio_devices: &sample_devices,
+            audio_device_scroll: 0,
+            volume_snapshot: vol_snap,
+            current_audio_device_name: Some("Speakers (Realtek Audio)"),
+            notice: None,
         };
         renderer
             .render(&slim_active_input)
             .expect("render active Slim Notch");
+        let compact_active_input = RenderFrameInput {
+            pill: IslandAnimator::new(IslandMode::Compact).current_pill(),
+            mode: IslandMode::Compact,
+            pill_opacity: 1.0,
+            content_alpha: 1.0,
+            config: AppConfig::default(),
+            media: &active_media,
+            active_hud: None,
+            volume_scrub_ratio: None,
+            hovered_action: None,
+            timeline_scrub_ratio: None,
+            monitor_label: "M1",
+            visualizer_phase: 0.4,
+            audio_devices: &sample_devices,
+            audio_device_scroll: 0,
+            volume_snapshot: vol_snap,
+            current_audio_device_name: Some("Speakers (Realtek Audio)"),
+            notice: None,
+        };
+        renderer
+            .render(&compact_active_input)
+            .expect("render active Compact pill");
+        let mut paused_media = active_media.clone();
+        paused_media.is_playing = false;
+        let compact_paused_input = RenderFrameInput {
+            media: &paused_media,
+            ..compact_active_input
+        };
+        renderer
+            .render(&compact_paused_input)
+            .expect("render paused Compact pill");
         let expanded_input = RenderFrameInput {
             pill: IslandAnimator::new(IslandMode::Expanded).current_pill(),
             mode: IslandMode::Expanded,
@@ -2834,14 +4669,69 @@ mod tests {
             content_alpha: 1.0,
             config: AppConfig::default(),
             media: &active_media,
+            active_hud: None,
+            volume_scrub_ratio: None,
             hovered_action: None,
             timeline_scrub_ratio: None,
             monitor_label: "M1",
             visualizer_phase: 0.4,
+            audio_devices: &sample_devices,
+            audio_device_scroll: 0,
+            volume_snapshot: vol_snap,
+            current_audio_device_name: Some("Speakers (Realtek Audio)"),
+            notice: None,
         };
         renderer
             .render(&expanded_input)
             .expect("render with artwork aura");
+        for hud in [
+            HudContent::Volume {
+                level: 0.64,
+                muted: false,
+                show_device_name: false,
+            },
+            HudContent::Volume {
+                level: 0.64,
+                muted: false,
+                show_device_name: true,
+            },
+            HudContent::Volume {
+                level: 0.64,
+                muted: true,
+                show_device_name: false,
+            },
+            HudContent::Power {
+                on_ac: true,
+                percent: Some(84),
+                low_battery: false,
+            },
+            HudContent::Power {
+                on_ac: false,
+                percent: Some(12),
+                low_battery: true,
+            },
+        ] {
+            let hud_input = RenderFrameInput {
+                pill: IslandAnimator::new(IslandMode::Compact).current_pill(),
+                mode: IslandMode::Compact,
+                pill_opacity: 1.0,
+                content_alpha: 1.0,
+                config: AppConfig::default(),
+                media: &active_media,
+                active_hud: Some(hud),
+                volume_scrub_ratio: None,
+                hovered_action: Some(UiAction::SeekVolume),
+                timeline_scrub_ratio: None,
+                monitor_label: "M1",
+                visualizer_phase: 0.0,
+                audio_devices: &sample_devices,
+                audio_device_scroll: 0,
+                volume_snapshot: vol_snap,
+                current_audio_device_name: Some("Headphones (USB DAC)"),
+                notice: None,
+            };
+            renderer.render(&hud_input).expect("render HUD Compact");
+        }
         renderer.update_artwork(ArtworkUpdate::Clear);
         assert!(renderer.artwork_aura_bitmap.is_none());
 
@@ -2972,10 +4862,17 @@ mod tests {
             content_alpha: 1.0,
             config: AppConfig::default(),
             media: &media,
+            active_hud: None,
+            volume_scrub_ratio: None,
             hovered_action: None,
             timeline_scrub_ratio: None,
             monitor_label: "1 - Chính",
             visualizer_phase: 0.0,
+            audio_devices: &[],
+            audio_device_scroll: 0,
+            volume_snapshot: VolumeSnapshot::default(),
+            current_audio_device_name: None,
+            notice: None,
         };
         let clear = D2D1_COLOR_F {
             r: 0.0,
@@ -2984,12 +4881,21 @@ mod tests {
             a: 0.0,
         };
         unsafe {
-            renderer.d2d_context.SetTarget(&target_img);
-            renderer.d2d_context.BeginDraw();
-            renderer.d2d_context.Clear(Some(&clear));
-            renderer.draw_pill_shell(pill, 1.0, true, false);
-            renderer.draw_clipped_contents(&input);
-            renderer.d2d_context.EndDraw(None, None).expect("EndDraw");
+            let off_ctx = renderer.d2d_context.clone();
+            let canvas = DrawCanvas {
+                ctx: &off_ctx,
+                scale: 1.0,
+                offset_x_px: 0.0,
+                offset_y_px: 0.0,
+            };
+            off_ctx.SetTarget(&target_img);
+            off_ctx.BeginDraw();
+            off_ctx.SetDpi(96.0, 96.0);
+            off_ctx.SetTransform(&canvas.base_transform());
+            off_ctx.Clear(Some(&clear));
+            renderer.draw_pill_shell(canvas, pill, 1.0, true, false);
+            renderer.draw_clipped_contents(canvas, &input, 1.0);
+            off_ctx.EndDraw(None, None).expect("EndDraw");
         }
 
         let cpu_props = D2D1_BITMAP_PROPERTIES1 {
