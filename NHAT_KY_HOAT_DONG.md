@@ -415,17 +415,19 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
-### Mục #030 — Bấm thanh tiêu đề thu gọn nhanh `Khay tệp` & `Cài đặt` và đưa bản vá lên Git
-- **Thời gian thực hiện:** 2026-11-28T13:27:30+07:00
+### Mục #030 — Bấm thanh tiêu đề thu gọn nhanh `Khay tệp` & `Cài đặt`, nâng cấp và phát hành `v0.3.1`
+- **Thời gian thực hiện:** 2026-11-28T13:30:00+07:00
 - **Phạm vi thay đổi:**
+  - [Cargo.toml](Cargo.toml) & [Cargo.lock](Cargo.lock): Nâng phiên bản gói lên **`0.3.1`**.
   - [src/state/hitboxes.rs](src/state/hitboxes.rs) & [src/state/mod.rs](src/state/mod.rs): Tách `is_compact_click` dùng chung; thêm `should_collapse_shelf_on_header_click` (`y < rect.top + 34.0`) cho `Khay tệp` và `should_close_subview_on_header_click` (`y < pill.top + 38.0`) cho bảng `Cài đặt` (`Settings`) / `Thiết bị phát âm thanh` (`AudioDevices`), vẫn giữ nguyên nút `"Thu gọn"` và `"Quay lại"` cùng cơ chế chặn đóng nhầm khi bấm khe nút bên dưới.
   - [src/window/input.rs](src/window/input.rs) & [src/window/mod.rs](src/window/mod.rs): Thêm `hovered_header` và `is_pointer_over_collapsible_header` đổi con trỏ bàn tay (`IDC_HAND`) khi rê lên thanh tiêu đề; xử lý bấm gọn thanh tiêu đề trong `handle_left_button_up` để thu gọn `Khay tệp` hoặc quay lại ngay từ `Settings` / `AudioDevices`.
   - [src/window/tests.rs](src/window/tests.rs): Bổ sung kịch bản bước #16 kiểm chứng bấm thanh tiêu đề `Khay tệp` và `Cài đặt` thu gọn/quay lại nhanh.
   - [GEMINI.md](GEMINI.md): Bổ sung quy tắc kéo thả OLE trên cửa sổ `WS_EX_NOREDIRECTIONBITMAP` vào Mục 5 theo duyệt của người dùng.
 - **Kiểm chứng thực tế:**
   - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
-  - `cargo test --locked`: **44/44** tests đạt (`0.27s`).
-  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`845,312 bytes`**, `SHA256=1ce00d14bb285db71120dc6955cd19e078bfc6561728b33151913f26b78770f1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`).
+  - `cargo test --locked`: **44/44** tests đạt (`0.34s`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`845,312 bytes`**, `SHA256=d48de192027bf8cfd915a7f79a53e0e98e471a451267297683164763eed331e1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` và `dist\WinDynamicIsland-win64.zip` (`404,852 bytes`), chạy nền ổn định (`PID 3376`).
+  - Đẩy commit bản vá và tag `v0.3.1` lên `origin` để CI tự động phát hành GitHub Release `v0.3.1`.
 
 ---
 

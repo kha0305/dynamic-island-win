@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **44/44** `cargo test --locked`, `cargo build --release --locked` (`v0.3.0`, `845,312 bytes`, `SHA256=1ce00d14bb285db71120dc6955cd19e078bfc6561728b33151913f26b78770f1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`) và kiểm chứng kéo thả tệp thật từ File Explorer vào `Khay tệp` trên màn hình FHD.
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **44/44** `cargo test --locked`, `cargo build --release --locked` (`v0.3.1`, `845,312 bytes`, `SHA256=d48de192027bf8cfd915a7f79a53e0e98e471a451267297683164763eed331e1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`) và kiểm chứng kéo thả tệp thật từ File Explorer vào `Khay tệp` trên màn hình FHD.
 
 ---
 
