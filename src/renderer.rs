@@ -48,10 +48,10 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_MEDIUM, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
     DWRITE_PARAGRAPH_ALIGNMENT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING, DWRITE_WORD_WRAPPING_NO_WRAP,
-    DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory, IDWriteInlineObject,
-    IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+    DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING,
+    DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP, DWriteCreateFactory, IDWriteFactory,
+    IDWriteInlineObject, IDWriteTextFormat, IDWriteTextLayout,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_USE_HOSTBACKDROPBRUSH, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
@@ -1600,9 +1600,9 @@ impl IslandRenderer {
                     &text_primary,
                     UiRectDip {
                         left: content_left,
-                        top: p.top + 4.5,
+                        top: p.top + 4.0,
                         right: content_right,
-                        bottom: p.top + 20.5,
+                        bottom: p.top + 20.0,
                     },
                 );
                 self.draw_text(
@@ -1612,9 +1612,9 @@ impl IslandRenderer {
                     &text_secondary,
                     UiRectDip {
                         left: content_left,
-                        top: p.top + 19.5,
+                        top: p.top + 19.0,
                         right: content_right,
-                        bottom: p.top + 32.0,
+                        bottom: p.top + 33.0,
                     },
                 );
             }
@@ -2787,6 +2787,7 @@ impl IslandRenderer {
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
         let sys_accent = self.brushes.sys_accent.clone();
+        let power_ok = self.brushes.power_ok.clone();
         let version_label = format!("v{APP_VERSION}");
 
         unsafe {
@@ -2798,19 +2799,7 @@ impl IslandRenderer {
                 UiRectDip {
                     left: p.left + 18.0,
                     top: p.top + 10.0,
-                    right: p.left + 216.0,
-                    bottom: p.top + 34.0,
-                },
-            );
-            self.draw_text(
-                canvas,
-                &version_label,
-                TextFormatSlot::CompactSub,
-                &text_secondary,
-                UiRectDip {
-                    left: p.left + 206.0,
-                    top: p.top + 12.0,
-                    right: p.left + p.width - 96.0,
+                    right: p.left + p.width - 98.0,
                     bottom: p.top + 34.0,
                 },
             );
@@ -2831,7 +2820,7 @@ impl IslandRenderer {
                         left: p.left + 18.0,
                         top: sec_top,
                         right: p.left + p.width - 18.0,
-                        bottom: sec_top + 14.0,
+                        bottom: sec_top + 15.0,
                     },
                 );
             }
@@ -3009,36 +2998,78 @@ impl IslandRenderer {
                     );
                 },
                 UiAction::CheckUpdate => {
-                    let (label, right_tag, right_brush) = match input.available_update_tag {
-                        Some(tag) => (String::from("Cập nhật mới"), tag, &sys_accent),
-                        None => (
-                            String::from("Kiểm tra cập nhật"),
-                            "Kiểm tra",
-                            &text_secondary,
-                        ),
+                    let (label, right_tag, right_brush, dot_brush) =
+                        match input.available_update_tag {
+                            Some(tag) => ("Có bản mới", tag, &sys_accent, &sys_accent),
+                            None => (
+                                "Kiểm tra cập nhật",
+                                version_label.as_str(),
+                                &text_secondary,
+                                &power_ok,
+                            ),
+                        };
+                    let tag_right = hb.rect.right - 10.0;
+                    let tag_box_w = 62.0;
+                    let tag_w = unsafe {
+                        self.measure_text_width(
+                            right_tag,
+                            TextFormatSlot::SmallRight,
+                            tag_box_w,
+                            hb.rect.height(),
+                        )
+                    }
+                    .unwrap_or(36.0);
+                    let dot_cx = Self::check_update_live_dot_cx(hb.rect.right, tag_w);
+                    let dot_cy = hb.rect.top + hb.rect.height() * 0.5;
+                    let halo_r = 5.0;
+                    let core_r = 2.6;
+                    let label_right = (dot_cx - halo_r - 4.0).max(hb.rect.left + 90.0);
+                    let halo = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: dot_cx - halo_r,
+                            top: dot_cy - halo_r,
+                            right: dot_cx + halo_r,
+                            bottom: dot_cy + halo_r,
+                        },
+                        radiusX: halo_r,
+                        radiusY: halo_r,
+                    };
+                    let core = D2D1_ROUNDED_RECT {
+                        rect: D2D_RECT_F {
+                            left: dot_cx - core_r,
+                            top: dot_cy - core_r,
+                            right: dot_cx + core_r,
+                            bottom: dot_cy + core_r,
+                        },
+                        radiusX: core_r,
+                        radiusY: core_r,
                     };
                     unsafe {
                         self.draw_text(
                             canvas,
-                            &label,
+                            label,
                             TextFormatSlot::Button,
                             &text_primary,
                             UiRectDip {
                                 left: hb.rect.left + 10.0,
                                 top: hb.rect.top,
-                                right: hb.rect.right - 56.0,
+                                right: label_right,
                                 bottom: hb.rect.bottom,
                             },
                         );
+                        dot_brush.SetOpacity(0.25);
+                        canvas.ctx.FillRoundedRectangle(&halo, dot_brush);
+                        dot_brush.SetOpacity(1.0);
+                        canvas.ctx.FillRoundedRectangle(&core, dot_brush);
                         self.draw_text(
                             canvas,
                             right_tag,
                             TextFormatSlot::SmallRight,
                             right_brush,
                             UiRectDip {
-                                left: hb.rect.right - 64.0,
+                                left: tag_right - tag_box_w,
                                 top: hb.rect.top,
-                                right: hb.rect.right - 10.0,
+                                right: tag_right,
                                 bottom: hb.rect.bottom,
                             },
                         );
@@ -3809,6 +3840,60 @@ impl IslandRenderer {
         }
     }
 
+    fn check_update_live_dot_cx(card_right: f32, tag_w: f32) -> f32 {
+        (card_right - 10.0) - tag_w.clamp(24.0, 56.0) - 9.0
+    }
+
+    unsafe fn get_or_create_text_layout(
+        &mut self,
+        text: &str,
+        slot: TextFormatSlot,
+        max_w: f32,
+        max_h: f32,
+    ) -> Option<IDWriteTextLayout> {
+        let w_tenth = (max_w * 10.0).round() as i32;
+        let h_tenth = (max_h * 10.0).round() as i32;
+
+        if let Some(idx) = self.text_cache.iter().position(|e| {
+            e.slot == slot && e.w_tenth == w_tenth && e.h_tenth == h_tenth && e.text == text
+        }) {
+            return Some(self.text_cache[idx].layout.clone());
+        }
+
+        self.utf16_scratch.clear();
+        self.utf16_scratch.extend(text.encode_utf16());
+        let format = self.fonts.by_slot(slot);
+        let created = unsafe {
+            self.dwrite_factory
+                .CreateTextLayout(&self.utf16_scratch, format, max_w, max_h)
+        }
+        .ok()?;
+        if self.text_cache.len() >= 32 {
+            self.text_cache.remove(0);
+        }
+        self.text_cache.push(TextLayoutCacheEntry {
+            slot,
+            text: text.to_owned(),
+            w_tenth,
+            h_tenth,
+            layout: created.clone(),
+        });
+        Some(created)
+    }
+
+    unsafe fn measure_text_width(
+        &mut self,
+        text: &str,
+        slot: TextFormatSlot,
+        max_w: f32,
+        max_h: f32,
+    ) -> Option<f32> {
+        let layout = unsafe { self.get_or_create_text_layout(text, slot, max_w, max_h) }?;
+        let mut metrics = DWRITE_TEXT_METRICS::default();
+        unsafe { layout.GetMetrics(&mut metrics) }.ok()?;
+        Some(metrics.width)
+    }
+
     unsafe fn draw_text(
         &mut self,
         canvas: DrawCanvas<'_>,
@@ -3820,38 +3905,10 @@ impl IslandRenderer {
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        let w_tenth = (rect.width() * 10.0).round() as i32;
-        let h_tenth = (rect.height() * 10.0).round() as i32;
-
-        let layout = if let Some(idx) = self.text_cache.iter().position(|e| {
-            e.slot == slot && e.w_tenth == w_tenth && e.h_tenth == h_tenth && e.text == text
-        }) {
-            self.text_cache[idx].layout.clone()
-        } else {
-            self.utf16_scratch.clear();
-            self.utf16_scratch.extend(text.encode_utf16());
-            let format = self.fonts.by_slot(slot);
-            let Ok(created) = (unsafe {
-                self.dwrite_factory.CreateTextLayout(
-                    &self.utf16_scratch,
-                    format,
-                    rect.width(),
-                    rect.height(),
-                )
-            }) else {
-                return;
-            };
-            if self.text_cache.len() >= 32 {
-                self.text_cache.remove(0);
-            }
-            self.text_cache.push(TextLayoutCacheEntry {
-                slot,
-                text: text.to_owned(),
-                w_tenth,
-                h_tenth,
-                layout: created.clone(),
-            });
-            created
+        let Some(layout) =
+            (unsafe { self.get_or_create_text_layout(text, slot, rect.width(), rect.height()) })
+        else {
+            return;
         };
 
         unsafe {
@@ -4407,7 +4464,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
     Ok(TextFormats {
         title: make_format(
             factory,
-            13.5,
+            14.2,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4415,7 +4472,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         subtitle: make_format(
             factory,
-            11.5,
+            12.0,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4423,7 +4480,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         body_left: make_format(
             factory,
-            11.5,
+            12.0,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
@@ -4431,7 +4488,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         compact: make_format(
             factory,
-            11.8,
+            12.2,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4439,7 +4496,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         compact_sub: make_format(
             factory,
-            10.0,
+            10.8,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4447,7 +4504,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         button: make_format(
             factory,
-            11.5,
+            12.2,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4455,7 +4512,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         button_center: make_format(
             factory,
-            11.5,
+            12.2,
             DWRITE_FONT_WEIGHT_SEMI_BOLD,
             DWRITE_TEXT_ALIGNMENT_CENTER,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4463,7 +4520,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         small: make_format(
             factory,
-            10.5,
+            11.2,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_CENTER,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4471,7 +4528,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         small_left: make_format(
             factory,
-            10.5,
+            11.2,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_LEADING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -4479,7 +4536,7 @@ fn create_text_formats(factory: &IDWriteFactory) -> windows::core::Result<TextFo
         )?,
         small_right: make_format(
             factory,
-            10.5,
+            11.2,
             DWRITE_FONT_WEIGHT_MEDIUM,
             DWRITE_TEXT_ALIGNMENT_TRAILING,
             DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
@@ -5253,6 +5310,26 @@ mod tests {
         let glass = sample_over_white(pill.left + pill.width - 18.0, pill.top + 45.0);
         let card = sample_over_white(pill.left + pill.width - 20.0, pill.top + 14.0);
         let exit = sample_over_white(pill.left + pill.width - 24.0, pill.top + pill.height - 16.0);
+        let mut check_hbs = Vec::new();
+        fill_interactive_hitboxes(pill, IslandMode::Settings, &mut check_hbs);
+        let check_rect = check_hbs
+            .iter()
+            .find(|hb| hb.action == UiAction::CheckUpdate)
+            .expect("CheckUpdate hitbox")
+            .rect;
+        let ver_text = format!("v{APP_VERSION}");
+        let ver_w = unsafe {
+            renderer.measure_text_width(
+                &ver_text,
+                TextFormatSlot::SmallRight,
+                62.0,
+                check_rect.height(),
+            )
+        }
+        .expect("measure version text width");
+        let live_dot_cx = IslandRenderer::check_update_live_dot_cx(check_rect.right, ver_w);
+        let live_dot_cy = check_rect.top + check_rect.height() * 0.5;
+        let live_dot = sample_over_white(live_dot_cx, live_dot_cy);
 
         unsafe {
             let _ = cpu_bmp.Unmap();
@@ -5265,7 +5342,7 @@ mod tests {
 
         let glass_contrast = (1.0 + 0.05) / (srgb_to_rel_lum(glass.0, glass.1, glass.2) + 0.05);
         println!(
-            "Over pure #FFFFFF -> glass={glass:?} (contrast={glass_contrast:.2}:1), card={card:?}, exit={exit:?}"
+            "Over pure #FFFFFF -> glass={glass:?} (contrast={glass_contrast:.2}:1), card={card:?}, exit={exit:?}, live_dot={live_dot:?} (ver_w={ver_w:.1})"
         );
 
         assert!(
@@ -5284,6 +5361,10 @@ mod tests {
         assert!(
             exit.0 > exit.1 * 1.45 && exit.0 <= 0.62,
             "Nút Thoát ứng dụng trên nền trắng phải giữ đỏ trầm, không bạc hồng: {exit:?}"
+        );
+        assert!(
+            live_dot.1 > live_dot.0 * 1.35 && live_dot.1 > live_dot.2 * 1.20,
+            "Chấm live cạnh phiên bản phải hiển thị xanh lục sắc nét: {live_dot:?}"
         );
     }
 }

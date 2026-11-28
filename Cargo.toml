@@ -1,6 +1,6 @@
 [package]
 name = "win-dynamic-island"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ cho Windows 11"
 
@@ -12,8 +12,6 @@ windows-numerics = "0.3.1"
 version = "0.62.2"
 features = [
     "Foundation",
-    "Foundation_Collections",
-    "Foundation_Numerics",
     "Graphics_DirectX",
     "Graphics_Effects",
     "Media_Control",
@@ -59,6 +57,7 @@ features = [
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = true
+panic = "abort"
 strip = true
 codegen-units = 1

@@ -370,10 +370,22 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - Đo kiểm runtime bản `dist\win-dynamic-island.exe` (`PID 7372`): `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `IDLE_CPU_2S_MS=0`, `WS_MB=48.48`, `PRIV_MB=19.34`, `HANDLES=548`, `NV_MODULES=0`.
   - Đã chụp ảnh trực tiếp kiểm chứng nút `Cài đặt` thu gọn cân đối trên `Expanded` và kiểm tra giữ nguyên `Compact` sau 6 giây rời chuột khi tắt `Gọn mép 4s`.
 
+### Mục #027 — Lọc bỏ feature dư thừa, tối ưu Full LTO/abort, tăng cỡ chữ và thêm chấm `live` cạnh phiên bản (`v0.2.3`)
+- **Thời gian thực hiện:** 2026-11-28T10:21:00+07:00
+- **Phạm vi thay đổi:**
+  - [Cargo.toml](Cargo.toml) & [Cargo.lock](Cargo.lock): Nâng phiên bản lên `0.2.3`; lọc và gỡ bỏ 2 feature của crate `windows` không sử dụng (`Foundation_Collections` và `Foundation_Numerics`), giữ đúng các feature thực dùng qua kiểm chứng compiler (`windows-core`, `Win32_Security`, `Win32_System_Variant`, `Win32_UI_Shell_PropertiesSystem` đều được sử dụng trực tiếp/gián tiếp); nâng `[profile.release]` lên `lto = true` (Full LTO) và `panic = "abort"`.
+  - [src/renderer.rs](src/renderer.rs): Gỡ nhãn phiên bản khỏi thanh tiêu đề `Settings`, đưa `v{APP_VERSION}` vào ngay thẻ `Kiểm tra cập nhật` (`UiAction::CheckUpdate`, khi có bản mới hiện `"Có bản mới"` + tag màu `sys_accent`); tách helper `get_or_create_text_layout` và `measure_text_width` (qua `DWRITE_TEXT_METRICS`, dùng chung cache `IDWriteTextLayout`) để vẽ chấm trạng thái `live` hai lớp tĩnh (`power_ok` xanh lục, hoặc `sys_accent` khi có bản cập nhật; `0% CPU` chờ) sát cạnh chuỗi phiên bản; nâng cỡ chữ toàn hệ thống `TextFormats` (`title 14.2`, `subtitle/body_left 12.0`, `compact/button/button_center 12.2`, `small* 11.2`, `compact_sub 10.8`) và bổ sung kiểm tra điểm ảnh chấm `live` trong test Direct2D offscreen `smoked_glass_preserves_translucency_and_contrast_over_white`.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked -- --nocapture`: **37/37** tests đạt trong `0.24s` (`WinRT Glass backdrop active: true | Blur effect active: true | GPU: AMD Radeon(TM) Graphics`, tương phản kính trên `#FFFFFF` đạt `5.58:1`, chấm `live` đo được `rgb=(0.36, 0.90, 0.56)` với `ver_w=29.7 DIP`).
+  - `cargo build --release --locked`: Dung lượng [target\release\win-dynamic-island.exe](target/release/win-dynamic-island.exe) giảm từ `917,504 bytes` (`v0.2.2`) xuống còn **`714,240 bytes`** (`697.5 KB`, giảm **`203,264 bytes` / `198.5 KB` / `22.2%`**), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` (`d4e7335b1f0e9750c6374a946c49950f4810ed4abf34a4ec7d28396415d0c232`) và `dist\WinDynamicIsland-win64.zip` (`345,120 bytes`).
+  - Kiểm tra PE Imports & ký tự: `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, không có DLL thừa.
+  - Đo kiểm runtime bản `dist\win-dynamic-island.exe` (`PID 5944` chạy nền trên Desktop): sau khi ổn định qua nhịp co giãn khởi động, `SETTLED_IDLE_CPU_2S_MS=0`, `WS_MB=43.69`, `PRIV_MB=18.48`, `HANDLES=400`, `0` module NVIDIA (`USERENV.dll` trùng chuỗi con `nv`), `AMD_MODULES=4`; ảnh chụp thật `1920x1080` xác nhận chấm `live` xanh lục hiển thị sắc nét cạnh `v0.2.3` không cắt chữ.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn tất và phát hành **v0.2.2** lên GitHub (`tag v0.2.2`), đồng bộ gói Portable `dist/` (`917,504 bytes`), dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 7372`).
+- **Trạng thái hiện tại:** Đã hoàn tất tối ưu, kiểm thử, đóng gói và phát hành **v0.2.3** lên GitHub (`tag v0.2.3`, `714,240 bytes`), đồng bộ gói Portable `dist/`, dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 5944`).
 - **Lưu ý cho phiên tiếp theo:**
   - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
   - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).
