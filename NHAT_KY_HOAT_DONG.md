@@ -332,8 +332,35 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - Nâng phiên bản `Cargo.toml` và `Cargo.lock` từ `0.1.3` lên `0.2.0`; cập nhật [README.md](README.md), [TASK_MEMORY.md](TASK_MEMORY.md) và [NHAT_KY_HOAT_DONG.md](NHAT_KY_HOAT_DONG.md) đồng bộ với toàn bộ tính năng của `v0.2.0` (Mục #016–#022).
 - **Kiểm chứng:** `cargo clippy --all-targets -- -D warnings` sạch (0 cảnh báo), `cargo test --locked -- --nocapture` đạt `36/36` (`0.40s`), `cargo build --release --locked` biên dịch `target/release/win-dynamic-island.exe` (`907,776 bytes`), giữ nguyên thư mục `dist/` cục bộ theo yêu cầu người dùng để CI `.github/workflows/release.yml` tự build và phát hành tag `v0.2.0` trên GitHub Releases.
 
+### Mục #024 — Đẩy GitHub `v0.2.0`, đồng bộ `dist/` và dọn sạch thư mục `target/`
+- **Thời gian thực hiện:** 2026-11-28T00:27:00+07:00
+- **Phạm vi công việc:** Đẩy toàn bộ mã nguồn + tag phát hành `v0.2.0` lên GitHub, sau đó dọn rác build (~6.02 GB) nhưng vẫn duy trì ứng dụng đang chạy liên tục từ bản Portable trong `dist/`.
+- **Kết quả thực hiện & kiểm chứng:**
+  - **Git & GitHub (`origin`):** Đã commit `9097ee3` (`29` tệp thay đổi) và đẩy nhánh `main` (`48b3b9b..9097ee3`) cùng tag `v0.2.0` (`ef5fc30d605af5e45f6c1af28525229f874d40ea`) lên `https://github.com/kha0305/dynamic-island-win.git`.
+  - **Đồng bộ `dist/` cục bộ:** Sao chép bản thực thi `v0.2.0` (`908,288 bytes`) sang `dist\win-dynamic-island.exe`, tái tạo `dist\win-dynamic-island.exe.sha256` và `dist\WinDynamicIsland-win64.zip` (`393,165 bytes`).
+  - **Dọn sạch `target/`:** Thoát êm tiến trình đang chạy từ `target\release` (`PID 18608` thay cho `PID 8156` sau tự cập nhật), xóa toàn bộ thư mục `target/` (`6,165.97 MB`, gồm `target\debug` `4,335.05 MB` và `target\release` `1,830.92 MB`).
+  - **Khởi chạy lại & dung lượng hiện tại:** Khởi chạy lại thành công từ `dist\win-dynamic-island.exe` (`PID 22228`); tổng dung lượng toàn dự án giảm xuống còn **2.33 MB** (`dist` `1.24 MB`, `.git` `0.49 MB`, `src` `0.44 MB`, `specs` `0.07 MB`).
+
+### Mục #025 — Bản vá tinh chỉnh giao diện `v0.2.1` (`ui-polish-v021`)
+- **Thời gian thực hiện:** 2026-11-28T09:46:40+07:00
+- **Đặc tả & Kế hoạch:** [specs/ui-polish-v021/spec.md](specs/ui-polish-v021/spec.md), [specs/ui-polish-v021/plan.md](specs/ui-polish-v021/plan.md), [specs/ui-polish-v021/tasks.md](specs/ui-polish-v021/tasks.md).
+- **Phạm vi thay đổi:**
+  - `Cargo.toml` & `Cargo.lock`: Nâng phiên bản gói lên `0.2.1`.
+  - [src/state.rs](src/state.rs): Nâng `MAX_SURFACE_HEIGHT_DIP = 396.0`, đồng bộ bề rộng `Expanded` (`424 x 160 DIP`) và mở rộng `Settings` (`424 x 360 DIP`), thêm `audio_devices_height_for_count` + `target_dimensions_for_state`, thêm `UiAction::CheckUpdate`, đưa `OpenSettings` xuống góc dưới phải đối xứng `OpenAudioDevices` và sắp xếp lại `fill_settings_hitboxes` theo 3 nhóm (`14` hitboxes).
+  - [src/renderer.rs](src/renderer.rs): Tách `sys_accent` / `sys_accent_soft` cố định khỏi màu ảnh bìa bài hát; vẽ icon bánh răng vector (`draw_gear_icon`) và mở rộng vùng tiêu đề `Expanded` sang hết lề phải (`+70 DIP`); phân 3 nhóm rõ ràng (`Hiển thị`, `HUD & Âm thanh`, `Hệ thống`), hiển thị `v0.2.1`, thêm mục `Thiết bị phát` và `Kiểm tra cập nhật` cùng thẳng hàng cột phải cho `Settings`; co chiều cao `AudioDevices` linh hoạt theo số thiết bị (`107..293 DIP`, 3 thiết bị = `193 DIP`); tối giản `Slim` khi rảnh và đồng bộ hover knob + halo cho `Volume HUD` khi hiển thị tên thiết bị; chuẩn hóa `mode_content_reveal_alpha` theo `target_h`.
+  - [src/window.rs](src/window.rs): Lưu `settings_return_mode` & `audio_devices_return_mode` để `"Quay lại"` trở về đúng màn hình nguồn, đồng bộ chiều cao động khi `DevicesChanged`, nối `UiAction::CheckUpdate` và bổ sung test tích hợp.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked -- --nocapture`: **37/37** tests đạt trong `0.27s` (`WinRT Glass backdrop active: true | Blur effect active: true | GPU: AMD Radeon(TM) Graphics`, tương phản kính trên `#FFFFFF` đạt `5.58:1`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (`916,992 bytes`), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` (`b730574494563e12998859635b3f2102b0a80cad482b331c98f7342840cae1bb`) và `dist\WinDynamicIsland-win64.zip` (`396,576 bytes`).
+  - Đo kiểm runtime thực tế bản `dist\win-dynamic-island.exe` (`PID 18972`): `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `IDLE_CPU_2S_MS=0`, `WS_MB=49.34`, `PRIV_MB=26.31`, `HANDLES=527`, `NV_MODULES=0`.
+  - Đã chụp ảnh kiểm chứng trực tiếp trên màn hình `1920x1080` các chế độ `Compact`, `Expanded`, `Settings` và `AudioDevices` của bản `v0.2.1`: đáy `Expanded` đối xứng, `Settings` phân 3 nhóm sắc nét không bị nhuốm đỏ theo bài hát, `AudioDevices` ôm gọn 3 thiết bị không dư khoảng trống đáy.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã chốt và chuẩn bị phát hành **v0.2.0** (gồm toàn bộ tính năng từ v0.1.3, tối ưu 144Hz `DwmFlush` + `CompositionDrawingSurface` đồng pha, HUD Âm lượng/Pin/Sạc, Chuyển nhanh thiết bị âm thanh `IPolicyConfig`, thẻ thông báo `Liquid Glass` nội bộ thay `MessageBoxW` và bố cục `Compact` 2 tầng `316 x 40 DIP`).
-- **Hạng mục tiếp theo (khi có yêu cầu):** Tiếp tục Giai đoạn mở rộng theo `specs/dynamic-island/spec.md` (File Shelf kéo thả tệp tạm, Pomodoro mini hoặc theo dõi phần cứng `v0.3`).
+- **Trạng thái hiện tại:** Đã hoàn tất và phát hành **v0.2.1** lên GitHub (`tag v0.2.1`), đồng bộ gói Portable `dist/` (`916,992 bytes`), dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 18972`).
+- **Lưu ý cho phiên tiếp theo:**
+  - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
+  - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).
+- **Hạng mục tiếp theo (khi có yêu cầu):** Tiếp tục Giai đoạn mở rộng (`v0.3`) theo [specs/dynamic-island/spec.md](specs/dynamic-island/spec.md) như File Shelf kéo thả tệp tạm, Pomodoro mini, theo dõi phần cứng tối giản hoặc Quick Actions.

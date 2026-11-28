@@ -44,7 +44,7 @@ use crate::state::{
     compute_surface_size_px, compute_window_origin_px, current_windows_filetime_ticks,
     effective_mode, fill_audio_devices_hitboxes, fill_interactive_hitboxes, fill_notice_hitboxes,
     fill_volume_hud_hitboxes, pill_contains_dip, should_collapse_expanded_on_blank_click,
-    target_dimensions_for_mode, target_top_for_mode, timeline_ratio_for_x,
+    target_dimensions_for_state, target_top_for_mode, timeline_ratio_for_x,
     timeline_seek_hit_bounds, volume_seek_hit_bounds,
 };
 use crate::tray::{
@@ -134,6 +134,8 @@ struct WindowController {
     config: AppConfig,
     monitors: Vec<DisplayMonitor>,
     requested_mode: IslandMode,
+    settings_return_mode: IslandMode,
+    audio_devices_return_mode: IslandMode,
     media_state: MediaDisplayState,
     fullscreen_active: bool,
     mouse_tracked: bool,
@@ -276,6 +278,8 @@ impl IslandWindow {
             config,
             monitors,
             requested_mode: IslandMode::Slim,
+            settings_return_mode: IslandMode::Expanded,
+            audio_devices_return_mode: IslandMode::Expanded,
             media_state: MediaDisplayState::default(),
             fullscreen_active: false,
             mouse_tracked: false,
@@ -537,7 +541,8 @@ impl WindowController {
     fn apply_target_and_render(&mut self) {
         let was_animating = self.animator.is_animating();
         let mode = self.current_effective_mode();
-        self.animator.set_target_mode(mode);
+        self.animator
+            .set_target_mode_with_audio_count(mode, self.audio_devices.len());
 
         if mode != IslandMode::Hidden {
             unsafe {
@@ -762,6 +767,10 @@ impl WindowController {
             } else {
                 None
             },
+            available_update_tag: self
+                .available_update
+                .as_ref()
+                .map(|r| r.version_tag.as_str()),
         };
         let _ = self.renderer.render(&frame);
 
@@ -788,7 +797,8 @@ impl WindowController {
                 return;
             }
             // Vùng bao hình chữ nhật trong suốt lúc đang co giãn để không cắt góc bo tròn và không ép DWM đổi Rgn liên tục.
-            let (tw, th, _, _) = target_dimensions_for_mode(self.animator.target_mode);
+            let (tw, th, _, _) =
+                target_dimensions_for_state(self.animator.target_mode, self.audio_devices.len());
             let t_top = target_top_for_mode(self.animator.target_mode);
             let t_left = (MAX_SURFACE_WIDTH_DIP - tw) * 0.5;
             let left = (pill.left.min(t_left) - 14.0).max(0.0);
@@ -1332,14 +1342,13 @@ impl WindowController {
             let max_scroll = devices.len().saturating_sub(MAX_AUDIO_DEVICES_VISIBLE);
             self.audio_device_scroll = self.audio_device_scroll.min(max_scroll);
             self.audio_devices = devices;
-            if latest_sync.is_none()
-                && matches!(
-                    self.current_effective_mode(),
-                    IslandMode::Expanded | IslandMode::AudioDevices
-                )
-                && !self.animator.is_animating()
-            {
-                self.render_current_frame();
+            if latest_sync.is_none() {
+                let mode = self.current_effective_mode();
+                if mode == IslandMode::AudioDevices {
+                    self.apply_target_and_render();
+                } else if mode == IslandMode::Expanded && !self.animator.is_animating() {
+                    self.render_current_frame();
+                }
             }
         }
         if let Some((snap, initial)) = latest_power {
@@ -2014,18 +2023,43 @@ impl WindowController {
         self.render_current_frame();
     }
 
+    fn normalized_subview_return_mode(&self, saved: IslandMode) -> IslandMode {
+        match saved {
+            IslandMode::Expanded => IslandMode::Expanded,
+            IslandMode::Settings => IslandMode::Settings,
+            _ => self.collapsed_rest_mode(),
+        }
+    }
+
+    fn apply_return_mode(&mut self, next: IslandMode) {
+        self.requested_mode = next;
+        if next == IslandMode::Expanded && !self.mouse_tracked {
+            self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+        } else if next == IslandMode::Compact
+            && !self.mouse_tracked
+            && self.config.notch_collapse_after_4s
+        {
+            self.schedule_compact_to_notch();
+        }
+    }
+
     fn handle_right_click(&mut self) {
         self.clear_hud_state_quiet();
         self.cancel_compact_to_notch();
-        self.requested_mode = if self.requested_mode == IslandMode::Settings {
-            if !self.mouse_tracked {
-                self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
-            }
-            IslandMode::Expanded
+        if self.requested_mode == IslandMode::Settings {
+            let next = self.normalized_subview_return_mode(self.settings_return_mode);
+            self.apply_return_mode(next);
         } else {
             self.cancel_auto_collapse();
-            IslandMode::Settings
-        };
+            self.settings_return_mode = match self.requested_mode {
+                IslandMode::Expanded => IslandMode::Expanded,
+                IslandMode::AudioDevices => {
+                    self.normalized_subview_return_mode(self.audio_devices_return_mode)
+                }
+                _ => self.collapsed_rest_mode(),
+            };
+            self.requested_mode = IslandMode::Settings;
+        }
         self.hovered_action = None;
         self.apply_target_and_render();
     }
@@ -2036,6 +2070,14 @@ impl WindowController {
                 self.clear_hud_state_quiet();
                 self.dismiss_notice_state_quiet();
                 self.cancel_compact_to_notch();
+                self.cancel_auto_collapse();
+                self.settings_return_mode = match self.requested_mode {
+                    IslandMode::Expanded => IslandMode::Expanded,
+                    IslandMode::AudioDevices => {
+                        self.normalized_subview_return_mode(self.audio_devices_return_mode)
+                    }
+                    _ => self.collapsed_rest_mode(),
+                };
                 self.hovered_action = None;
                 self.requested_mode = IslandMode::Settings;
             }
@@ -2044,6 +2086,10 @@ impl WindowController {
                 self.dismiss_notice_state_quiet();
                 self.cancel_compact_to_notch();
                 self.cancel_auto_collapse();
+                self.audio_devices_return_mode = match self.requested_mode {
+                    IslandMode::Settings | IslandMode::Expanded => self.requested_mode,
+                    _ => self.collapsed_rest_mode(),
+                };
                 self.hovered_action = None;
                 self.requested_mode = IslandMode::AudioDevices;
             }
@@ -2081,7 +2127,13 @@ impl WindowController {
             }
             UiAction::BackToMedia => {
                 self.hovered_action = None;
-                self.requested_mode = IslandMode::Expanded;
+                let saved = match self.requested_mode {
+                    IslandMode::AudioDevices => self.audio_devices_return_mode,
+                    IslandMode::Settings => self.settings_return_mode,
+                    _ => self.collapsed_rest_mode(),
+                };
+                let next = self.normalized_subview_return_mode(saved);
+                self.apply_return_mode(next);
             }
             UiAction::ToggleVolumeMute => {
                 self.volume_snapshot.muted = !self.volume_snapshot.muted;
@@ -2151,6 +2203,10 @@ impl WindowController {
                 if set_autostart_enabled(target) {
                     self.config.autostart = target;
                 }
+            }
+            UiAction::CheckUpdate => {
+                self.handle_check_update_command();
+                return;
             }
             UiAction::CycleMonitor => {
                 if !self.monitors.is_empty() {
@@ -2475,6 +2531,12 @@ unsafe extern "system" fn window_proc(
                     IDM_OPEN_SETTINGS => {
                         ctrl.dismiss_notice_state_quiet();
                         ctrl.cancel_compact_to_notch();
+                        ctrl.cancel_auto_collapse();
+                        ctrl.settings_return_mode = if ctrl.requested_mode == IslandMode::Expanded {
+                            IslandMode::Expanded
+                        } else {
+                            ctrl.collapsed_rest_mode()
+                        };
                         ctrl.config.visible = true;
                         ctrl.requested_mode = IslandMode::Settings;
                         ctrl.sync_fullscreen_timer();
@@ -2733,6 +2795,8 @@ mod tests {
                 config,
                 monitors,
                 requested_mode: IslandMode::Slim,
+                settings_return_mode: IslandMode::Expanded,
+                audio_devices_return_mode: IslandMode::Expanded,
                 media_state: MediaDisplayState::default(),
                 fullscreen_active: false,
                 mouse_tracked: false,
@@ -2932,13 +2996,14 @@ mod tests {
                 assert!(ctrl.active_hud.is_none());
             }
 
-            // 8. Trong Settings: bấm trượt từ một thẻ sang khoảng trống không làm đóng Settings nhầm.
+            // 8. Trong Settings: bấm trượt từ một thẻ sang khoảng trống không làm đóng Settings nhầm,
+            //    và bấm Thiết bị phát -> Quay lại phải trở về đúng Settings.
             let settings_pill = {
                 let ctrl = get_controller_mut(hwnd).unwrap();
                 ctrl.animator = IslandAnimator::new(IslandMode::Settings);
                 ctrl.animator.current_pill()
             };
-            let mut settings_hbs = Vec::with_capacity(12);
+            let mut settings_hbs = Vec::with_capacity(14);
             fill_interactive_hitboxes(settings_pill, IslandMode::Settings, &mut settings_hbs);
             let tile_rect = settings_hbs
                 .iter()
@@ -2958,6 +3023,10 @@ mod tests {
                 let ctrl = get_controller_mut(hwnd).unwrap();
                 assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
                 assert!(ctrl.config.hud_wheel_enabled);
+                ctrl.execute_ui_action(UiAction::OpenAudioDevices);
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::AudioDevices);
+                ctrl.execute_ui_action(UiAction::BackToMedia);
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
             }
 
             // 9. Khi đang Slim và di chuột vào vùng đệm ngoài viên thuốc thật -> không bung nhầm lên Compact.
@@ -3010,7 +3079,14 @@ mod tests {
                 ctrl.animator = IslandAnimator::new(IslandMode::Expanded);
                 ctrl.execute_ui_action(UiAction::OpenAudioDevices);
                 assert_eq!(ctrl.current_effective_mode(), IslandMode::AudioDevices);
-                ctrl.animator = IslandAnimator::new(IslandMode::AudioDevices);
+                assert!((ctrl.animator.height.target - 293.0).abs() < 0.1);
+                let mut t = Instant::now();
+                for _ in 0..200 {
+                    t += Duration::from_millis(8);
+                    if !ctrl.animator.step(t) {
+                        break;
+                    }
+                }
             }
             let dev_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
             let dev_pt = pill_to_screen(dev_pill.left + dev_pill.width * 0.5, dev_pill.top + 120.0);

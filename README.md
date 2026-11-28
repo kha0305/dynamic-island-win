@@ -4,9 +4,9 @@ Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ viết thuần bằ
 
 ## Tính năng chính
 - **Hiệu ứng kính Liquid Glass thời gian thực:** Sử dụng `Windows::UI::Composition` (`HostBackdropBrush` qua chuỗi `CLSID_D2D1Saturation` + `CLSID_D2D1GaussianBlur`) kết hợp `CompositionDrawingSurface` đồng pha, lớp kính khói chống lóa và tự đồng bộ sắc màu + điểm nhấn theo ảnh bìa video/bài hát đang phát.
-- **Điều khiển nhạc hệ thống (GSMTC) & Bố cục Compact 2 tầng:** Tự động bắt phiên phát nhạc từ trình duyệt (Chrome, Edge...) và các trình phát Windows, hiển thị ảnh bìa tròn, tiêu đề + nghệ sĩ, thanh tiến độ, nút vector bo tròn và kéo trượt Timeline mượt (`SetCapture`).
-- **Tab-Safe Notch & Chuyển động lò xo 144Hz:** Thu gọn về dải Notch mảnh `152 x 16 DIP` bám mép `y = 0` không chắn tab trình duyệt, đồng bộ nhịp `DwmFlush` và ngủ `0%` CPU khi đứng yên.
-- **HUD Âm lượng, Pin / Sạc & Chuyển thiết bị âm thanh:** Hiển thị HUD tức thời khi đổi âm lượng hoặc cắm/rút sạc, hỗ trợ cuộn chuột chỉnh loa trực tiếp trên Island và chuyển nhanh thiết bị phát mặc định qua `IPolicyConfig`.
+- **Điều khiển nhạc hệ thống (GSMTC) & Bố cục Expanded đối xứng:** Tự động bắt phiên phát nhạc từ trình duyệt (Chrome, Edge...) và các trình phát Windows; chế độ `Compact` 2 tầng có ảnh bìa tròn, thanh tiến độ và sóng nhạc; chế độ `Expanded` rộng rãi với nút `Cài đặt` và chọn thiết bị phát đối xứng ở hàng đáy cùng thanh kéo trượt Timeline mượt (`SetCapture`).
+- **Tab-Safe Notch & Chuyển động lò xo 144Hz:** Thu gọn về dải Notch mảnh `152 x 16 DIP` tối giản bám mép `y = 0` không chắn tab trình duyệt, đồng bộ nhịp `DwmFlush` và ngủ `0%` CPU khi đứng yên.
+- **HUD Âm lượng, Pin / Sạc, Thiết bị phát & Bảng điều khiển nhanh:** Hiển thị HUD tức thời khi đổi âm lượng hoặc cắm/rút sạc, hỗ trợ cuộn chuột chỉnh loa trực tiếp trên Island, chuyển nhanh thiết bị phát mặc định qua `IPolicyConfig` với danh sách tự co chiều cao, cùng bảng `Settings` phân 3 nhóm tách màu hệ thống và kiểm tra cập nhật trực tiếp.
 - **Tối ưu Laptop Hybrid GPU & gọn nhẹ:** Tự ưu tiên GPU tích hợp (`DXGI_GPU_PREFERENCE_MINIMUM_POWER`), không đánh thức card rời NVIDIA khi rảnh; tự ẩn khi phát hiện ứng dụng toàn màn hình.
 - **Bản Portable độc lập & Tự cập nhật Liquid Glass:** Liên kết tĩnh CRT (`+crt-static`) không cần Visual C++ Redistributable, chặn mở trùng tiến trình (`CreateMutexW`) và tự kiểm tra/tải bản cập nhật từ GitHub Releases (`WinHTTP` + `SHA-256`) kèm thẻ thông báo nội bộ.
 

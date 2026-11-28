@@ -85,11 +85,13 @@ use crate::media::{ArtworkUpdate, DecodedArtwork};
 use crate::state::{
     AppConfig, HudContent, IslandMode, IslandNoticeView, MAX_AUDIO_DEVICES_VISIBLE,
     MediaDisplayState, NoticeKind, PillRectDip, UiAction, UiHitbox, UiRectDip,
-    compute_surface_size_px, current_windows_filetime_ticks, fill_audio_devices_hitboxes,
-    fill_interactive_hitboxes, fill_notice_hitboxes, fill_volume_hud_hitboxes,
-    format_duration_ticks, target_dimensions_for_mode,
+    audio_devices_height_for_count, compute_surface_size_px, current_windows_filetime_ticks,
+    fill_audio_devices_hitboxes, fill_interactive_hitboxes, fill_notice_hitboxes,
+    fill_volume_hud_hitboxes, format_duration_ticks, settings_section_tops,
+    target_dimensions_for_mode, target_dimensions_for_state,
 };
 use crate::tray::to_wide_null;
+use crate::updater::APP_VERSION;
 
 pub struct RenderFrameInput<'a> {
     pub pill: PillRectDip,
@@ -109,6 +111,7 @@ pub struct RenderFrameInput<'a> {
     pub volume_snapshot: VolumeSnapshot,
     pub current_audio_device_name: Option<&'a str>,
     pub notice: Option<IslandNoticeView<'a>>,
+    pub available_update_tag: Option<&'a str>,
 }
 
 struct BrushPalette {
@@ -127,6 +130,8 @@ struct BrushPalette {
     text_shadow: ID2D1SolidColorBrush,
     accent: ID2D1SolidColorBrush,
     accent_soft: ID2D1SolidColorBrush,
+    sys_accent: ID2D1SolidColorBrush,
+    sys_accent_soft: ID2D1SolidColorBrush,
     switch_off: ID2D1SolidColorBrush,
     knob: ID2D1SolidColorBrush,
     danger_bg: ID2D1SolidColorBrush,
@@ -1028,6 +1033,9 @@ impl IslandRenderer {
             (TextFormatSlot::SmallLeft, "Âm thanh"),
             (TextFormatSlot::SmallRight, "Đang dùng"),
             (TextFormatSlot::SmallRight, "100%"),
+            (TextFormatSlot::CompactSub, "HUD & Âm thanh"),
+            (TextFormatSlot::Button, "Kiểm tra cập nhật"),
+            (TextFormatSlot::Button, "Thiết bị phát"),
         ];
         for &(slot, text) in samples {
             let wide = to_wide_null(text);
@@ -1206,8 +1214,10 @@ impl IslandRenderer {
                     show_media_aura,
                 );
             }
-            let effective_alpha =
-                input.content_alpha.clamp(0.0, 1.0) * mode_content_reveal_alpha(input.pill, input.mode);
+            let (_, target_h, _, _) =
+                target_dimensions_for_state(input.mode, input.audio_devices.len());
+            let effective_alpha = input.content_alpha.clamp(0.0, 1.0)
+                * mode_content_reveal_alpha(input.pill, input.mode, target_h);
             if effective_alpha > 0.03 && input.mode != IslandMode::Hidden {
                 unsafe {
                     self.draw_clipped_contents(canvas, input, effective_alpha);
@@ -1341,7 +1351,8 @@ impl IslandRenderer {
         input: &RenderFrameInput<'_>,
         effective_alpha: f32,
     ) {
-        let (target_w, target_h, target_r, _) = target_dimensions_for_mode(input.mode);
+        let (target_w, target_h, target_r, _) =
+            target_dimensions_for_state(input.mode, input.audio_devices.len());
         let need_clip = effective_alpha < 0.995
             || (input.pill.width - target_w).abs() > 0.5
             || (input.pill.height - target_h).abs() > 0.5
@@ -1405,7 +1416,44 @@ impl IslandRenderer {
     }
 
     unsafe fn draw_slim(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
-        let p = input.pill;
+        let (sw, sh, _, _) = target_dimensions_for_mode(IslandMode::Slim);
+        let p = virtual_pill_anchored(input.pill, sw, sh, false);
+        let cy = p.top + p.height * 0.5;
+
+        if !input.media.has_session {
+            // Chế độ chờ tối giản chuẩn Notch: chấm trạng thái dịu nhẹ + vạch định vị tâm siêu mảnh.
+            let dot = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: p.left + 11.0,
+                    top: cy - 2.2,
+                    right: p.left + 15.4,
+                    bottom: cy + 2.2,
+                },
+                radiusX: 2.2,
+                radiusY: 2.2,
+            };
+            let cx = p.left + p.width * 0.5;
+            let notch_bar = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: cx - 14.0,
+                    top: cy - 1.2,
+                    right: cx + 14.0,
+                    bottom: cy + 1.2,
+                },
+                radiusX: 1.2,
+                radiusY: 1.2,
+            };
+            unsafe {
+                canvas
+                    .ctx
+                    .FillRoundedRectangle(&dot, &self.brushes.sys_accent_soft);
+                canvas
+                    .ctx
+                    .FillRoundedRectangle(&notch_bar, &self.brushes.card_border);
+            }
+            return;
+        }
+
         let art_size = 10.0;
         let art_x = p.left + 8.0;
         let art_y = p.top + (p.height - art_size) * 0.5;
@@ -1420,13 +1468,11 @@ impl IslandRenderer {
             );
         }
 
-        let vis_active =
-            input.config.visualizer_enabled && input.media.has_session && input.media.is_playing;
+        let vis_active = input.config.visualizer_enabled && input.media.is_playing;
         let track_left = art_x + art_size + 7.0;
-        let right_reserve = if vis_active { 25.0 } else { 10.0 };
+        let right_reserve = if vis_active { 25.0 } else { 22.0 };
         let track_right = (p.left + p.width - right_reserve).max(track_left + 12.0);
         let track_h = 2.4;
-        let cy = p.top + p.height * 0.5;
 
         let bg_bar = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
@@ -1444,31 +1490,27 @@ impl IslandRenderer {
                 .FillRoundedRectangle(&bg_bar, &self.brushes.switch_off);
         }
 
-        if input.media.has_session {
-            let track_w = (track_right - track_left).max(1.0);
-            let tl = input.media.timeline;
-            let (fill_w, fill_brush) = if tl.available && tl.duration_ticks() > 0 {
-                let ratio = tl.progress_ratio(
-                    current_windows_filetime_ticks(),
-                    input.media.is_playing,
-                );
-                ((track_w * ratio).max(track_h), &self.brushes.accent)
-            } else {
-                (track_w, &self.brushes.accent_soft)
-            };
-            let fg_bar = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: track_left,
-                    top: cy - track_h * 0.5,
-                    right: (track_left + fill_w).min(track_right),
-                    bottom: cy + track_h * 0.5,
-                },
-                radiusX: track_h * 0.5,
-                radiusY: track_h * 0.5,
-            };
-            unsafe {
-                canvas.ctx.FillRoundedRectangle(&fg_bar, fill_brush);
-            }
+        let track_w = (track_right - track_left).max(1.0);
+        let tl = input.media.timeline;
+        let (fill_w, fill_brush) = if tl.available && tl.duration_ticks() > 0 {
+            let ratio =
+                tl.progress_ratio(current_windows_filetime_ticks(), input.media.is_playing);
+            ((track_w * ratio).max(track_h), &self.brushes.accent)
+        } else {
+            (track_w, &self.brushes.accent_soft)
+        };
+        let fg_bar = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: track_left,
+                top: cy - track_h * 0.5,
+                right: (track_left + fill_w).min(track_right),
+                bottom: cy + track_h * 0.5,
+            },
+            radiusX: track_h * 0.5,
+            radiusY: track_h * 0.5,
+        };
+        unsafe {
+            canvas.ctx.FillRoundedRectangle(&fg_bar, fill_brush);
         }
 
         if vis_active {
@@ -1484,6 +1526,25 @@ impl IslandRenderer {
                     2.2,
                     3,
                 );
+            }
+        } else if !input.media.is_playing {
+            let pause_cx = p.left + p.width - 14.0;
+            for dx in [-1.8_f32, 1.8_f32] {
+                let bar = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: pause_cx + dx - 0.85,
+                        top: cy - 3.0,
+                        right: pause_cx + dx + 0.85,
+                        bottom: cy + 3.0,
+                    },
+                    radiusX: 0.85,
+                    radiusY: 0.85,
+                };
+                unsafe {
+                    canvas
+                        .ctx
+                        .FillRoundedRectangle(&bar, &self.brushes.text_secondary);
+                }
             }
         }
     }
@@ -1777,6 +1838,7 @@ impl IslandRenderer {
                     None
                 };
 
+                let slider_hovered = input.hovered_action == Some(UiAction::SeekVolume);
                 if let Some(dev_name) = dev_label {
                     let text_primary = self.brushes.text_primary.clone();
                     unsafe {
@@ -1789,12 +1851,14 @@ impl IslandRenderer {
                                 left: slider_rect.left,
                                 top: p.top + 4.5,
                                 right: slider_rect.right,
-                                bottom: p.top + p.height - 10.5,
+                                bottom: p.top + p.height - 14.5,
                             },
                         );
                     }
-                    let bar_top = p.top + p.height - 7.8;
-                    let bar_bot = p.top + p.height - 5.0;
+                    let bar_h = if slider_hovered { 3.8 } else { 2.8 };
+                    let bar_cy = p.top + p.height - 6.4;
+                    let bar_top = bar_cy - bar_h * 0.5;
+                    let bar_bot = bar_cy + bar_h * 0.5;
                     let bar_bg = D2D1_ROUNDED_RECT {
                         rect: D2D_RECT_F {
                             left: slider_rect.left,
@@ -1802,8 +1866,8 @@ impl IslandRenderer {
                             right: slider_rect.right,
                             bottom: bar_bot,
                         },
-                        radiusX: 1.3,
-                        radiusY: 1.3,
+                        radiusX: bar_h * 0.5,
+                        radiusY: bar_h * 0.5,
                     };
                     unsafe {
                         canvas
@@ -1811,7 +1875,7 @@ impl IslandRenderer {
                             .FillRoundedRectangle(&bar_bg, &self.brushes.switch_off);
                     }
                     if display_level > 0.004 {
-                        let fill_w = (slider_rect.width() * display_level).max(2.6);
+                        let fill_w = (slider_rect.width() * display_level).max(bar_h);
                         let bar_fg = D2D1_ROUNDED_RECT {
                             rect: D2D_RECT_F {
                                 left: slider_rect.left,
@@ -1819,8 +1883,8 @@ impl IslandRenderer {
                                 right: (slider_rect.left + fill_w).min(slider_rect.right),
                                 bottom: bar_bot,
                             },
-                            radiusX: 1.3,
-                            radiusY: 1.3,
+                            radiusX: bar_h * 0.5,
+                            radiusY: bar_h * 0.5,
                         };
                         let fill_brush = if muted {
                             &self.brushes.danger_border
@@ -1831,8 +1895,39 @@ impl IslandRenderer {
                             canvas.ctx.FillRoundedRectangle(&bar_fg, fill_brush);
                         }
                     }
+                    if slider_hovered {
+                        let knob_r = 3.8;
+                        let knob_x = (slider_rect.left + slider_rect.width() * display_level)
+                            .clamp(slider_rect.left + knob_r, slider_rect.right - knob_r);
+                        let halo_r = knob_r + 2.0;
+                        let halo = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: knob_x - halo_r,
+                                top: bar_cy - halo_r,
+                                right: knob_x + halo_r,
+                                bottom: bar_cy + halo_r,
+                            },
+                            radiusX: halo_r,
+                            radiusY: halo_r,
+                        };
+                        let knob = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F {
+                                left: knob_x - knob_r,
+                                top: bar_cy - knob_r,
+                                right: knob_x + knob_r,
+                                bottom: bar_cy + knob_r,
+                            },
+                            radiusX: knob_r,
+                            radiusY: knob_r,
+                        };
+                        unsafe {
+                            canvas
+                                .ctx
+                                .FillRoundedRectangle(&halo, &self.brushes.accent_soft);
+                            canvas.ctx.FillRoundedRectangle(&knob, &self.brushes.knob);
+                        }
+                    }
                 } else {
-                    let slider_hovered = input.hovered_action == Some(UiAction::SeekVolume);
                     let track_h = if is_dragging {
                         6.5
                     } else if slider_hovered {
@@ -2187,7 +2282,7 @@ impl IslandRenderer {
     }
 
     unsafe fn draw_expanded(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
-        let p = virtual_pill_anchored(input.pill, 416.0, 160.0, false);
+        let p = virtual_pill_anchored(input.pill, 424.0, 160.0, false);
         let art_size = 64.0;
         let art_x = p.left + 18.0;
         let art_y = p.top + 16.0;
@@ -2203,7 +2298,7 @@ impl IslandRenderer {
         }
 
         let text_left = art_x + art_size + 14.0;
-        let text_right = p.left + p.width - 80.0;
+        let text_right = p.left + p.width - 18.0;
 
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
@@ -2356,13 +2451,22 @@ impl IslandRenderer {
                 canvas.ctx.FillRoundedRectangle(&card, fill);
             }
             if hb.action == UiAction::OpenSettings {
+                let icon_brush = text_secondary.clone();
+                let icon_cx = hb.rect.left + 32.0;
+                let icon_cy = hb.rect.top + hb.rect.height() * 0.5;
                 unsafe {
+                    self.draw_gear_icon(canvas, icon_cx, icon_cy, &icon_brush);
                     self.draw_text(
                         canvas,
                         "Cài đặt",
-                        TextFormatSlot::Small,
+                        TextFormatSlot::Button,
                         &text_primary,
-                        hb.rect,
+                        UiRectDip {
+                            left: hb.rect.left + 44.0,
+                            top: hb.rect.top,
+                            right: hb.rect.right - 12.0,
+                            bottom: hb.rect.bottom,
+                        },
                     );
                 }
             } else if hb.action == UiAction::OpenAudioDevices {
@@ -2379,7 +2483,7 @@ impl IslandRenderer {
                 unsafe {
                     self.draw_speaker_icon(
                         canvas,
-                        hb.rect.left + 15.0,
+                        hb.rect.left + 14.0,
                         hb.rect.top + hb.rect.height() * 0.5,
                         if input.volume_snapshot.available {
                             input.volume_snapshot.level
@@ -2395,7 +2499,7 @@ impl IslandRenderer {
                         TextFormatSlot::SmallLeft,
                         &text_primary,
                         UiRectDip {
-                            left: hb.rect.left + 28.0,
+                            left: hb.rect.left + 26.0,
                             top: hb.rect.top,
                             right: hb.rect.right - 8.0,
                             bottom: hb.rect.bottom,
@@ -2417,6 +2521,56 @@ impl IslandRenderer {
                         icon_brush,
                     );
                 }
+            }
+        }
+    }
+
+    unsafe fn draw_gear_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let ring = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 3.6,
+                top: cy - 3.6,
+                right: cx + 3.6,
+                bottom: cy + 3.6,
+            },
+            radiusX: 3.6,
+            radiusY: 3.6,
+        };
+        let core = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 1.3,
+                top: cy - 1.3,
+                right: cx + 1.3,
+                bottom: cy + 1.3,
+            },
+            radiusX: 1.3,
+            radiusY: 1.3,
+        };
+        unsafe {
+            canvas.ctx.DrawRoundedRectangle(&ring, brush, 1.45, None);
+            canvas.ctx.FillRoundedRectangle(&core, brush);
+            for idx in 0..8 {
+                let angle = idx as f32 * std::f32::consts::FRAC_PI_4;
+                let (sin_a, cos_a) = angle.sin_cos();
+                canvas.ctx.DrawLine(
+                    Vector2 {
+                        X: cx + cos_a * 3.7,
+                        Y: cy + sin_a * 3.7,
+                    },
+                    Vector2 {
+                        X: cx + cos_a * 5.6,
+                        Y: cy + sin_a * 5.6,
+                    },
+                    brush,
+                    1.55,
+                    Some(&self.icons.round_stroke),
+                );
             }
         }
     }
@@ -2629,9 +2783,11 @@ impl IslandRenderer {
     }
 
     unsafe fn draw_settings(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
-        let p = virtual_pill_anchored(input.pill, 424.0, 298.0, false);
+        let p = virtual_pill_anchored(input.pill, 424.0, 360.0, false);
         let text_primary = self.brushes.text_primary.clone();
-        let accent = self.brushes.accent.clone();
+        let text_secondary = self.brushes.text_secondary.clone();
+        let sys_accent = self.brushes.sys_accent.clone();
+        let version_label = format!("v{APP_VERSION}");
 
         unsafe {
             self.draw_text(
@@ -2641,11 +2797,44 @@ impl IslandRenderer {
                 &text_primary,
                 UiRectDip {
                     left: p.left + 18.0,
-                    top: p.top + 12.0,
-                    right: p.left + p.width - 96.0,
-                    bottom: p.top + 36.0,
+                    top: p.top + 10.0,
+                    right: p.left + 216.0,
+                    bottom: p.top + 34.0,
                 },
             );
+            self.draw_text(
+                canvas,
+                &version_label,
+                TextFormatSlot::CompactSub,
+                &text_secondary,
+                UiRectDip {
+                    left: p.left + 206.0,
+                    top: p.top + 12.0,
+                    right: p.left + p.width - 96.0,
+                    bottom: p.top + 34.0,
+                },
+            );
+        }
+
+        let sec_tops = settings_section_tops(p);
+        for (sec_top, title) in sec_tops
+            .into_iter()
+            .zip(["Hiển thị", "HUD & Âm thanh", "Hệ thống"])
+        {
+            unsafe {
+                self.draw_text(
+                    canvas,
+                    title,
+                    TextFormatSlot::CompactSub,
+                    &text_secondary,
+                    UiRectDip {
+                        left: p.left + 18.0,
+                        top: sec_top,
+                        right: p.left + p.width - 18.0,
+                        bottom: sec_top + 14.0,
+                    },
+                );
+            }
         }
 
         fill_interactive_hitboxes(p, IslandMode::Settings, &mut self.hitbox_scratch);
@@ -2654,6 +2843,8 @@ impl IslandRenderer {
             let hb = self.hitbox_scratch[idx];
             let hovered = input.hovered_action == Some(hb.action);
             let is_danger = hb.action == UiAction::ExitApp;
+            let has_pending_update =
+                hb.action == UiAction::CheckUpdate && input.available_update_tag.is_some();
             let fill = if is_danger {
                 if hovered {
                     &self.brushes.danger_hover
@@ -2662,6 +2853,8 @@ impl IslandRenderer {
                 }
             } else if hovered {
                 &self.brushes.surface_hover
+            } else if has_pending_update {
+                &self.brushes.sys_accent_soft
             } else {
                 &self.brushes.surface_card
             };
@@ -2685,6 +2878,10 @@ impl IslandRenderer {
                         1.0,
                         None,
                     );
+                } else if has_pending_update {
+                    canvas
+                        .ctx
+                        .DrawRoundedRectangle(&card, &self.brushes.sys_accent, 0.95, None);
                 } else {
                     canvas.ctx.DrawRoundedRectangle(
                         &card,
@@ -2701,7 +2898,7 @@ impl IslandRenderer {
                         canvas,
                         "Quay lại",
                         TextFormatSlot::ButtonCenter,
-                        &accent,
+                        &text_primary,
                         hb.rect,
                     );
                 },
@@ -2712,6 +2909,7 @@ impl IslandRenderer {
                         "Gọn mép 4s",
                         input.config.notch_collapse_after_4s,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleHudVolume => unsafe {
@@ -2721,6 +2919,7 @@ impl IslandRenderer {
                         "HUD Âm lượng",
                         input.config.hud_volume_enabled,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleHudWheel => unsafe {
@@ -2730,6 +2929,7 @@ impl IslandRenderer {
                         "Cuộn chỉnh loa",
                         input.config.hud_wheel_enabled,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleHudPower => unsafe {
@@ -2739,6 +2939,33 @@ impl IslandRenderer {
                         "HUD Pin / Sạc",
                         input.config.hud_power_enabled,
                         &text_primary,
+                        &sys_accent,
+                    );
+                },
+                UiAction::OpenAudioDevices => unsafe {
+                    self.draw_text(
+                        canvas,
+                        "Thiết bị phát",
+                        TextFormatSlot::Button,
+                        &text_primary,
+                        UiRectDip {
+                            left: hb.rect.left + 10.0,
+                            top: hb.rect.top,
+                            right: hb.rect.right - 46.0,
+                            bottom: hb.rect.bottom,
+                        },
+                    );
+                    self.draw_text(
+                        canvas,
+                        "Chọn",
+                        TextFormatSlot::SmallRight,
+                        &sys_accent,
+                        UiRectDip {
+                            left: hb.rect.right - 48.0,
+                            top: hb.rect.top,
+                            right: hb.rect.right - 10.0,
+                            bottom: hb.rect.bottom,
+                        },
                     );
                 },
                 UiAction::ToggleAutoHideIdle => unsafe {
@@ -2748,6 +2975,7 @@ impl IslandRenderer {
                         "Tự ẩn khi rảnh",
                         input.config.auto_hide_when_idle,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleAutoHideFullscreen => unsafe {
@@ -2757,6 +2985,7 @@ impl IslandRenderer {
                         "Ẩn toàn màn hình",
                         input.config.auto_hide_fullscreen,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleVisualizer => unsafe {
@@ -2766,6 +2995,7 @@ impl IslandRenderer {
                         "Sóng nhạc động",
                         input.config.visualizer_enabled,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
                 UiAction::ToggleAutostart => unsafe {
@@ -2775,8 +3005,45 @@ impl IslandRenderer {
                         "Mở cùng Windows",
                         input.config.autostart,
                         &text_primary,
+                        &sys_accent,
                     );
                 },
+                UiAction::CheckUpdate => {
+                    let (label, right_tag, right_brush) = match input.available_update_tag {
+                        Some(tag) => (String::from("Cập nhật mới"), tag, &sys_accent),
+                        None => (
+                            String::from("Kiểm tra cập nhật"),
+                            "Kiểm tra",
+                            &text_secondary,
+                        ),
+                    };
+                    unsafe {
+                        self.draw_text(
+                            canvas,
+                            &label,
+                            TextFormatSlot::Button,
+                            &text_primary,
+                            UiRectDip {
+                                left: hb.rect.left + 10.0,
+                                top: hb.rect.top,
+                                right: hb.rect.right - 56.0,
+                                bottom: hb.rect.bottom,
+                            },
+                        );
+                        self.draw_text(
+                            canvas,
+                            right_tag,
+                            TextFormatSlot::SmallRight,
+                            right_brush,
+                            UiRectDip {
+                                left: hb.rect.right - 64.0,
+                                top: hb.rect.top,
+                                right: hb.rect.right - 10.0,
+                                bottom: hb.rect.bottom,
+                            },
+                        );
+                    }
+                }
                 UiAction::CycleMonitor => {
                     let label = format!("Màn hình: {}", input.monitor_label);
                     unsafe {
@@ -2795,12 +3062,12 @@ impl IslandRenderer {
                         self.draw_text(
                             canvas,
                             "Đổi",
-                            TextFormatSlot::Small,
-                            &accent,
+                            TextFormatSlot::SmallRight,
+                            &sys_accent,
                             UiRectDip {
                                 left: hb.rect.right - 64.0,
                                 top: hb.rect.top,
-                                right: hb.rect.right - 12.0,
+                                right: hb.rect.right - 10.0,
                                 bottom: hb.rect.bottom,
                             },
                         );
@@ -2834,10 +3101,11 @@ impl IslandRenderer {
         canvas: DrawCanvas<'_>,
         input: &RenderFrameInput<'_>,
     ) {
-        let p = virtual_pill_anchored(input.pill, 424.0, 284.0, false);
+        let target_h = audio_devices_height_for_count(input.audio_devices.len());
+        let p = virtual_pill_anchored(input.pill, 424.0, target_h, false);
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
-        let accent = self.brushes.accent.clone();
+        let sys_accent = self.brushes.sys_accent.clone();
 
         let total = input.audio_devices.len();
         let max_scroll = total.saturating_sub(MAX_AUDIO_DEVICES_VISIBLE);
@@ -2921,7 +3189,7 @@ impl IslandRenderer {
                             canvas,
                             "Quay lại",
                             TextFormatSlot::ButtonCenter,
-                            &accent,
+                            &text_primary,
                             hb.rect,
                         );
                     }
@@ -2934,12 +3202,12 @@ impl IslandRenderer {
                     let fill = if hovered {
                         &self.brushes.surface_hover
                     } else if is_default {
-                        &self.brushes.accent_soft
+                        &self.brushes.sys_accent_soft
                     } else {
                         &self.brushes.surface_card
                     };
                     let border_brush = if is_default {
-                        &self.brushes.accent
+                        &self.brushes.sys_accent
                     } else {
                         &self.brushes.card_border
                     };
@@ -2953,7 +3221,7 @@ impl IslandRenderer {
                         if input.volume_snapshot.muted {
                             self.brushes.danger_border.clone()
                         } else {
-                            accent.clone()
+                            sys_accent.clone()
                         }
                     } else {
                         text_secondary.clone()
@@ -2997,7 +3265,7 @@ impl IslandRenderer {
                                 canvas,
                                 "Đang dùng",
                                 TextFormatSlot::SmallRight,
-                                &accent,
+                                &sys_accent,
                                 UiRectDip {
                                     left: hb.rect.right - 78.0,
                                     top: hb.rect.top,
@@ -3051,9 +3319,9 @@ impl IslandRenderer {
                     &text_secondary,
                     UiRectDip {
                         left: p.left + 16.0,
-                        top: p.top + 265.0,
+                        top: p.top + target_h - 22.0,
                         right: p.left + p.width - 16.0,
-                        bottom: p.top + 281.0,
+                        bottom: p.top + target_h - 6.0,
                     },
                 );
             }
@@ -3308,6 +3576,7 @@ impl IslandRenderer {
         label: &str,
         enabled: bool,
         text_brush: &ID2D1SolidColorBrush,
+        track_on_brush: &ID2D1SolidColorBrush,
     ) {
         let text_rect = UiRectDip {
             left: rect.left + 10.0,
@@ -3334,7 +3603,7 @@ impl IslandRenderer {
             radiusY: sw_h * 0.5,
         };
         let track_brush = if enabled {
-            &self.brushes.accent
+            track_on_brush
         } else {
             &self.brushes.switch_off
         };
@@ -4121,6 +4390,8 @@ fn create_brushes(ctx: &ID2D1DeviceContext) -> windows::core::Result<BrushPalett
         text_shadow: make(0.01, 0.015, 0.03, 0.56)?,
         accent: make(0.38, 0.85, 1.0, 1.0)?,
         accent_soft: make(0.14, 0.42, 0.62, 0.54)?,
+        sys_accent: make(0.38, 0.85, 1.0, 1.0)?,
+        sys_accent_soft: make(0.14, 0.42, 0.62, 0.54)?,
         switch_off: make(0.19, 0.23, 0.31, 0.54)?,
         knob: make(0.99, 0.99, 1.0, 1.0)?,
         danger_bg: make(0.58, 0.10, 0.13, 0.64)?,
@@ -4254,7 +4525,7 @@ fn make_format(
     Ok(fmt)
 }
 
-fn mode_content_reveal_alpha(pill: PillRectDip, mode: IslandMode) -> f32 {
+fn mode_content_reveal_alpha(pill: PillRectDip, mode: IslandMode, target_h: f32) -> f32 {
     match mode {
         IslandMode::Hidden => 0.0,
         IslandMode::Slim => {
@@ -4272,8 +4543,11 @@ fn mode_content_reveal_alpha(pill: PillRectDip, mode: IslandMode) -> f32 {
             let shrink_fade = ((245.0 - pill.height) / 60.0).clamp(0.0, 1.0);
             grow_fade.min(shrink_fade)
         }
-        IslandMode::Settings | IslandMode::AudioDevices => {
-            ((pill.height - 175.0) / 80.0).clamp(0.0, 1.0)
+        IslandMode::Settings => ((pill.height - 175.0) / 80.0).clamp(0.0, 1.0),
+        IslandMode::AudioDevices => {
+            let start = (target_h * 0.45).min(120.0);
+            let span = (target_h * 0.35).max(36.0);
+            ((pill.height - start) / span).clamp(0.0, 1.0)
         }
     }
 }
@@ -4554,6 +4828,7 @@ mod tests {
                 volume_snapshot: vol_snap,
                 current_audio_device_name: Some("Speakers (Realtek Audio)"),
                 notice: sample_notice,
+                available_update_tag: Some("v0.2.2"),
             };
             renderer.render(&input).expect("renderer.render");
         }
@@ -4587,6 +4862,7 @@ mod tests {
                     primary_label: "Cập nhật ngay",
                     secondary_label: sec,
                 }),
+                available_update_tag: None,
             };
             renderer
                 .render(&notice_input)
@@ -4627,6 +4903,7 @@ mod tests {
             volume_snapshot: vol_snap,
             current_audio_device_name: Some("Speakers (Realtek Audio)"),
             notice: None,
+            available_update_tag: None,
         };
         renderer
             .render(&slim_active_input)
@@ -4649,6 +4926,7 @@ mod tests {
             volume_snapshot: vol_snap,
             current_audio_device_name: Some("Speakers (Realtek Audio)"),
             notice: None,
+            available_update_tag: None,
         };
         renderer
             .render(&compact_active_input)
@@ -4680,10 +4958,43 @@ mod tests {
             volume_snapshot: vol_snap,
             current_audio_device_name: Some("Speakers (Realtek Audio)"),
             notice: None,
+            available_update_tag: None,
         };
         renderer
             .render(&expanded_input)
             .expect("render with artwork aura");
+        let mut dev_anim = IslandAnimator::new(IslandMode::Slim);
+        dev_anim.set_target_mode_with_audio_count(IslandMode::AudioDevices, sample_devices.len());
+        let mut t = std::time::Instant::now();
+        for _ in 0..300 {
+            t += std::time::Duration::from_millis(8);
+            if !dev_anim.step(t) {
+                break;
+            }
+        }
+        let audio_dev_input = RenderFrameInput {
+            pill: dev_anim.current_pill(),
+            mode: IslandMode::AudioDevices,
+            pill_opacity: 1.0,
+            content_alpha: 1.0,
+            config: AppConfig::default(),
+            media: &active_media,
+            active_hud: None,
+            volume_scrub_ratio: None,
+            hovered_action: None,
+            timeline_scrub_ratio: None,
+            monitor_label: "M1",
+            visualizer_phase: 0.0,
+            audio_devices: &sample_devices,
+            audio_device_scroll: 0,
+            volume_snapshot: vol_snap,
+            current_audio_device_name: Some("Speakers (Realtek Audio)"),
+            notice: None,
+            available_update_tag: None,
+        };
+        renderer
+            .render(&audio_dev_input)
+            .expect("render compact dynamic AudioDevices");
         for hud in [
             HudContent::Volume {
                 level: 0.64,
@@ -4729,6 +5040,7 @@ mod tests {
                 volume_snapshot: vol_snap,
                 current_audio_device_name: Some("Headphones (USB DAC)"),
                 notice: None,
+                available_update_tag: None,
             };
             renderer.render(&hud_input).expect("render HUD Compact");
         }
@@ -4873,6 +5185,7 @@ mod tests {
             volume_snapshot: VolumeSnapshot::default(),
             current_audio_device_name: None,
             notice: None,
+            available_update_tag: None,
         };
         let clear = D2D1_COLOR_F {
             r: 0.0,
@@ -4937,9 +5250,9 @@ mod tests {
             (r_p + (1.0 - a), g_p + (1.0 - a), b_p + (1.0 - a), a)
         };
 
-        let glass = sample_over_white(pill.left + pill.width * 0.5, pill.top + 41.0);
-        let card = sample_over_white(pill.left + pill.width - 20.0, pill.top + 15.0);
-        let exit = sample_over_white(pill.left + pill.width - 24.0, pill.top + pill.height - 14.0);
+        let glass = sample_over_white(pill.left + pill.width - 18.0, pill.top + 45.0);
+        let card = sample_over_white(pill.left + pill.width - 20.0, pill.top + 14.0);
+        let exit = sample_over_white(pill.left + pill.width - 24.0, pill.top + pill.height - 16.0);
 
         unsafe {
             let _ = cpu_bmp.Unmap();

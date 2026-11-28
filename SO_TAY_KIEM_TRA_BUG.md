@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --all-targets -- -D warnings`, 16/16 `cargo test`, `cargo build --release` (`407.5 KB`) và kịch bản kiểm thử tương tác thật trên `.exe`.
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --all-targets -- -D warnings`, 37/37 `cargo test`, `cargo build --release` (`v0.2.1`, `916,992 bytes`) và chụp ảnh kiểm chứng trực tiếp các trạng thái giao diện trên Desktop.
 
 ---
 
@@ -108,3 +108,9 @@
   - `Cargo.toml` & `src/renderer.rs`: Thêm `"Graphics_DirectX"`, chuyển nhánh `CompositionHost::WinRtGlass` sang `CompositionGraphicsDevice` + `CompositionDrawingSurface` + `ICompositionDrawingSurfaceInterop` (`BeginDraw` / `EndDraw`, giữ `IDXGISwapChain1` cho `DirectCompFallback`) dùng chung `DrawCanvas<'_>` để vẽ và commit đồng pha cùng `WinRtBackdropLayer`; thêm `mode_content_reveal_alpha` và kẹp độ lệch dọc của `virtual_pill_anchored` về `[-10.0, 0.0]`.
   - `src/window.rs`: Tách `apply_rect_region` (`diameter == 0`) cho suốt giai đoạn `is_animating()` trong `update_window_region` (chỉ áp `apply_round_region` khi dừng hẳn) và giới hạn điều kiện bỏ qua `pill_contains_dip` trong `handle_mouse_move` chỉ dành cho `IslandMode::Slim`.
 - **Cách phòng tránh:** Khi kết hợp hiệu ứng nền `SpriteVisual` của `Windows::UI::Composition` với nét vẽ vector Direct2D trên cửa sổ không viền, luôn vẽ nội dung lên `CompositionDrawingSurface` thuộc cùng `Compositor` thay vì trộn `IDXGISwapChain1::Present` riêng lẻ; không áp `CreateRoundRectRgn` từng khung hình khi lò xo đang chạy.
+
+### Lỗi #013: Điều khiển hệ thống nhuốm màu ảnh bìa bài hát, lệch trọng tâm `Expanded`, trống đáy `AudioDevices` và `mode_content_reveal_alpha` phụ thuộc chiều cao cố định
+- **Hiện tượng lỗi:** Khi phát nhạc tông đỏ, công tắc bật, nút `"Quay lại"`, nhãn `"Đổi"` trong `Settings` và thẻ `"Đang dùng"` trong `AudioDevices` bị nhuốm đỏ đồng dạng nút thoát; nút `Cài đặt` ở góc trên phải `Expanded` làm cắt sớm tiêu đề và lệch đáy; `AudioDevices` chừa mảng đen lớn dưới 3 thiết bị; và nếu co chiều cao `AudioDevices` xuống `107 DIP` (1 thiết bị) thì công thức cũ `(pill.height - 175.0)/80.0` làm ẩn hoàn toàn nội dung.
+- **Nguyên nhân gốc rễ:** `BrushPalette` (`src/renderer.rs`) dùng chung `brushes.accent` / `brushes.accent_soft` (vốn bị `apply_media_theme_colors` ghi đè khi đổi ảnh bìa) cho cả bảng cấu hình hệ thống; `target_dimensions_for_mode(IslandMode::AudioDevices)` cố định `284.0 DIP`; `mode_content_reveal_alpha` giả định cứng `AudioDevices` luôn cao như `Settings`.
+- **Cách sửa:** Tách `sys_accent` / `sys_accent_soft` cố định trong `BrushPalette`, chuyển nút `"Quay lại"` sang `text_primary`; đưa `OpenSettings` xuống góc dưới phải `Expanded` (`424 x 160 DIP`); tính chiều cao `AudioDevices` linh hoạt theo `audio_devices_height_for_count` và chuẩn hóa `mode_content_reveal_alpha` theo `target_h` thực tế; đồng thời tách `settings_return_mode` / `audio_devices_return_mode` trong `src/window.rs`.
+- **Cách phòng tránh:** Luôn tách riêng bảng màu thích ứng media với màu điều khiển hệ thống, luôn chụp ảnh thực tế tất cả các màn hình sau khi thay đổi giao diện, và trong unit test `IslandAnimator::step` phải tăng thời gian mô phỏng cố định (như `+8 ms/step`) thay vì gọi `Instant::now()` liên tục gây kéo dài thời gian test.
