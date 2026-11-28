@@ -342,13 +342,12 @@ impl WindowController {
     }
 
     pub(super) fn schedule_hud_expire(&self) {
+        self.schedule_hud_expire_ms(HUD_EXPIRE_DELAY_MS);
+    }
+
+    pub(super) fn schedule_hud_expire_ms(&self, delay_ms: u32) {
         unsafe {
-            let _ = SetTimer(
-                Some(self.hwnd),
-                TIMER_HUD_EXPIRE_ID,
-                HUD_EXPIRE_DELAY_MS,
-                None,
-            );
+            let _ = SetTimer(Some(self.hwnd), TIMER_HUD_EXPIRE_ID, delay_ms, None);
         }
     }
 
@@ -359,6 +358,8 @@ impl WindowController {
     pub(super) fn clear_hud_state_quiet(&mut self) {
         self.cancel_hud_expire();
         self.active_hud = None;
+        self.hud_device_name = None;
+        self.hud_device_container_key = None;
         self.dragging_volume = false;
         self.volume_drag_ratio = None;
     }
@@ -384,25 +385,38 @@ impl WindowController {
     }
 
     pub(super) fn show_hud(&mut self, hud: HudContent) {
+        let delay_ms = match hud {
+            HudContent::Device { .. } => DEVICE_HUD_EXPIRE_DELAY_MS,
+            _ => HUD_EXPIRE_DELAY_MS,
+        };
+        self.show_hud_with_duration(hud, delay_ms);
+    }
+
+    pub(super) fn show_hud_with_duration(&mut self, hud: HudContent, delay_ms: u32) {
         if !self.config.visible || (self.config.auto_hide_fullscreen && self.fullscreen_active) {
             return;
         }
         if matches!(
             self.requested_mode,
             IslandMode::Expanded
+                | IslandMode::AntiExpanded
                 | IslandMode::Settings
                 | IslandMode::AudioDevices
                 | IslandMode::Notice
         ) {
             return;
         }
+        if !matches!(hud, HudContent::Device { .. }) {
+            self.hud_device_name = None;
+            self.hud_device_container_key = None;
+        }
         self.cancel_compact_to_notch();
         self.active_hud = Some(hud);
         if self.dragging_volume {
             self.cancel_hud_expire();
         } else {
-            // Luôn đặt hạn 2 giây để HUD tự thu về nhạc khi người dùng ngừng cuộn dù con trỏ đứng yên trên pill.
-            self.schedule_hud_expire();
+            // Luôn đặt hạn để HUD tự thu về nhạc khi người dùng ngừng thao tác dù con trỏ đứng yên trên pill.
+            self.schedule_hud_expire_ms(delay_ms);
         }
         self.apply_target_and_render();
     }
@@ -421,6 +435,7 @@ impl WindowController {
         };
         let mut latest_sync = None;
         let mut latest_devices: Option<Vec<AudioOutputDevice>> = None;
+        let mut latest_device_event: Option<DeviceHudEvent> = None;
         let mut latest_power: Option<(crate::hud::PowerSnapshot, bool)> = None;
         let mut unavailable = false;
         while let Some(ev) = mon.try_recv() {
@@ -429,14 +444,19 @@ impl WindowController {
                     level,
                     muted,
                     device_name,
+                    device_kind,
                     switched_device,
                     show_hud,
                 } => {
-                    latest_sync = Some((level, muted, device_name, switched_device, show_hud));
+                    latest_sync =
+                        Some((level, muted, device_name, device_kind, switched_device, show_hud));
                     unavailable = false;
                 }
                 HudWorkerEvent::DevicesChanged { devices } => {
                     latest_devices = Some(devices);
+                }
+                HudWorkerEvent::DeviceChanged(dev_ev) => {
+                    latest_device_event = Some(dev_ev);
                 }
                 HudWorkerEvent::PowerSync { snap, initial } => {
                     latest_power = Some((snap, initial));
@@ -449,8 +469,10 @@ impl WindowController {
         if let Some(devices) = latest_devices {
             if let Some(def) = devices.iter().find(|d| d.is_default) {
                 self.current_audio_device_name = Some(def.name.clone());
+                self.current_audio_device_kind = def.kind;
             } else if devices.is_empty() {
                 self.current_audio_device_name = None;
+                self.current_audio_device_kind = AudioOutputKind::Speaker;
             }
             let max_scroll = devices.len().saturating_sub(MAX_AUDIO_DEVICES_VISIBLE);
             self.audio_device_scroll = self.audio_device_scroll.min(max_scroll);
@@ -459,9 +481,43 @@ impl WindowController {
                 let mode = self.current_effective_mode();
                 if mode == IslandMode::AudioDevices {
                     self.apply_target_and_render();
-                } else if mode == IslandMode::Expanded && !self.animator.is_animating() {
+                } else if matches!(mode, IslandMode::Expanded | IslandMode::Compact)
+                    && !self.animator.is_animating()
+                {
                     self.render_current_frame();
                 }
+            }
+        }
+        if let Some(dev_ev) = latest_device_event
+            && self.config.hud_device_enabled
+        {
+            if dev_ev.is_battery_refresh {
+                if let Some(HudContent::Device {
+                    category: DeviceHudCategory::Bluetooth,
+                    connected: true,
+                    ..
+                }) = self.active_hud
+                    && self.hud_device_container_key.as_deref() == Some(&dev_ev.container_key)
+                {
+                    self.hud_device_name = Some(dev_ev.name);
+                    self.active_hud = Some(HudContent::Device {
+                        category: dev_ev.category,
+                        connected: true,
+                        battery_percent: dev_ev.battery_percent,
+                    });
+                    self.request_smooth_render();
+                }
+            } else {
+                self.hud_device_name = Some(dev_ev.name);
+                self.hud_device_container_key = Some(dev_ev.container_key);
+                self.show_hud_with_duration(
+                    HudContent::Device {
+                        category: dev_ev.category,
+                        connected: dev_ev.connected,
+                        battery_percent: dev_ev.battery_percent,
+                    },
+                    DEVICE_HUD_EXPIRE_DELAY_MS,
+                );
             }
         }
         if let Some((snap, initial)) = latest_power {
@@ -497,10 +553,13 @@ impl WindowController {
             self.volume_snapshot.available = false;
             return;
         }
-        if let Some((level, muted, device_name, switched_device, show_hud)) = latest_sync {
+        if let Some((level, muted, device_name, device_kind, switched_device, show_hud)) =
+            latest_sync
+        {
             if let Some(name) = device_name {
                 self.current_audio_device_name = Some(name);
             }
+            self.current_audio_device_kind = device_kind;
             let holding = self.dragging_volume
                 || self
                     .volume_hold_until
@@ -526,7 +585,7 @@ impl WindowController {
                     self.request_smooth_render();
                 } else if matches!(
                     self.current_effective_mode(),
-                    IslandMode::Expanded | IslandMode::AudioDevices
+                    IslandMode::Expanded | IslandMode::AudioDevices | IslandMode::Compact
                 ) && !self.animator.is_animating()
                 {
                     self.render_current_frame();
@@ -548,6 +607,7 @@ impl WindowController {
             dev.is_default = idx == index;
         }
         self.current_audio_device_name = Some(target.name);
+        self.current_audio_device_kind = target.kind;
         if let Some(mon) = &self.audio_monitor {
             mon.send_command(AudioCommand::SetDefaultDevice(target.id));
         }
@@ -595,14 +655,9 @@ impl WindowController {
         }
     }
 
-    pub(super) fn schedule_anti_expire(&self) {
+    pub(super) fn schedule_anti_expire_ms(&self, delay_ms: u32) {
         unsafe {
-            let _ = SetTimer(
-                Some(self.hwnd),
-                TIMER_ANTI_EXPIRE_ID,
-                ANTI_TERMINAL_DISPLAY_MS,
-                None,
-            );
+            let _ = SetTimer(Some(self.hwnd), TIMER_ANTI_EXPIRE_ID, delay_ms, None);
         }
     }
 
@@ -610,14 +665,48 @@ impl WindowController {
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_ANTI_EXPIRE_ID) };
     }
 
+    pub(super) fn reschedule_next_anti_expire(&self) {
+        let now = now_unix_ms();
+        let next_wait = self
+            .visible_anti_slots()
+            .into_iter()
+            .filter(|s| !s.state.is_running())
+            .map(|s| {
+                let limit = if s.state == AntiAgentState::Error {
+                    ANTI_ERROR_DISPLAY_MS as u64
+                } else {
+                    ANTI_TERMINAL_DISPLAY_MS as u64
+                };
+                let elapsed = now.saturating_sub(s.updated_unix_ms);
+                limit.saturating_sub(elapsed).max(80) as u32
+            })
+            .min();
+        if let Some(delay) = next_wait {
+            self.schedule_anti_expire_ms(delay);
+        } else {
+            self.cancel_anti_expire();
+        }
+    }
+
     pub(super) fn handle_anti_expire_timer(&mut self) {
         self.cancel_anti_expire();
-        if self.is_shelf_drag_active() {
-            self.schedule_anti_expire();
+        if self.is_shelf_drag_active() || self.requested_mode == IslandMode::AntiExpanded {
+            self.schedule_anti_expire_ms(ANTI_TERMINAL_DISPLAY_MS);
             return;
         }
-        self.anti_banner_active = false;
-        self.anti_snapshot = None;
+        let now = now_unix_ms();
+        self.anti_slots.retain(|s| {
+            if s.state.is_running() {
+                return !s.is_stale(now);
+            }
+            let limit = if s.state == AntiAgentState::Error {
+                ANTI_ERROR_DISPLAY_MS as u64
+            } else {
+                ANTI_TERMINAL_DISPLAY_MS as u64
+            };
+            now.saturating_sub(s.updated_unix_ms) <= limit
+        });
+        self.reschedule_next_anti_expire();
         self.apply_target_and_render();
     }
 
@@ -625,23 +714,17 @@ impl WindowController {
         let Some(latest) = self.anti_watcher.as_ref().and_then(AntiWatcher::drain_latest) else {
             return;
         };
-        self.anti_snapshot = latest;
-        match &self.anti_snapshot {
-            Some(snap) if snap.state.is_running() => {
-                self.cancel_anti_expire();
-                self.anti_banner_active = true;
-            }
-            Some(_) => {
-                self.anti_banner_active = true;
-                self.schedule_anti_expire();
-            }
-            None => {
-                self.cancel_anti_expire();
-                self.anti_banner_active = false;
-            }
+        for snap in &latest {
+            let key = snap.slot_key();
+            self.dismissed_anti_keys
+                .retain(|(k, ts)| k != &key || snap.updated_unix_ms <= *ts);
         }
-        self.foreground_is_anti =
-            self.config.anti_monitor_enabled && is_foreground_anti_app(self.hwnd);
+        self.anti_slots = latest;
+        if self.anti_display_snapshot().is_none() && self.requested_mode == IslandMode::AntiExpanded {
+            self.anti_expanded_key = None;
+            self.requested_mode = self.collapsed_rest_mode();
+        }
+        self.reschedule_next_anti_expire();
         self.apply_target_and_render();
     }
 

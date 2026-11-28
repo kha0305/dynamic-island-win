@@ -201,16 +201,18 @@ impl IslandRenderer {
                     .filter(|s| !s.is_empty())
                     .unwrap_or("Âm thanh");
                 unsafe {
-                    self.draw_speaker_icon(
+                    self.draw_audio_output_icon(
                         canvas,
                         hb.rect.left + 14.0,
                         hb.rect.top + hb.rect.height() * 0.5,
+                        input.current_audio_device_kind,
                         if input.volume_snapshot.available {
                             input.volume_snapshot.level
                         } else {
                             0.6
                         },
                         input.volume_snapshot.muted,
+                        1.0,
                         &speaker_brush,
                     );
                     self.draw_text(

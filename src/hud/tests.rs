@@ -163,15 +163,30 @@ fn power_tracker_alerts_only_on_ac_toggle_or_low_thresholds() {
 
 #[test]
 fn audio_devices_sort_and_policy_config_com_init() {
+    assert_eq!(
+        policy_config::classify_audio_output_kind("BTHENUM", Some(5), "Diamond Stereo"),
+        AudioOutputKind::Bluetooth
+    );
+    assert_eq!(
+        policy_config::classify_audio_output_kind("HDAUDIO", Some(3), "Headphones"),
+        AudioOutputKind::Headphones
+    );
+    assert_eq!(
+        policy_config::classify_audio_output_kind("HDAUDIO", Some(1), "Speakers (Realtek)"),
+        AudioOutputKind::Speaker
+    );
+
     let mut items = vec![
         AudioOutputDevice {
             id: String::from("id-2"),
             name: String::from("Speakers (Realtek)"),
+            kind: AudioOutputKind::Speaker,
             is_default: false,
         },
         AudioOutputDevice {
             id: String::from("id-1"),
             name: String::from("headphones (USB)"),
+            kind: AudioOutputKind::Headphones,
             is_default: true,
         },
     ];
@@ -182,7 +197,7 @@ fn audio_devices_sort_and_policy_config_com_init() {
     let com = ComMtaGuard(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok());
     let enumerator: IMMDeviceEnumerator =
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.expect("enumerator");
-    let (real_devices, _def) = enumerate_output_devices(&enumerator);
+    let (real_devices, _def, _kind) = enumerate_output_devices(&enumerator);
     println!("Detected {} active playback devices", real_devices.len());
     for d in &real_devices {
         assert!(!d.id.is_empty());

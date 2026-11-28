@@ -62,15 +62,51 @@ fn acquire_single_instance_named(name: &str) -> windows::core::Result<Option<Sin
     Ok(Some(SingleInstanceGuard(handle)))
 }
 
-fn wake_existing_instance() {
+fn wake_existing_instance() -> bool {
     let class_w = to_wide_null(WINDOW_CLASS_NAME);
     if let Ok(existing) = unsafe { FindWindowW(PCWSTR(class_w.as_ptr()), PCWSTR::null()) }
         && !existing.is_invalid()
     {
-        unsafe {
-            let _ = PostMessageW(Some(existing), WM_APP_WAKE_INSTANCE, WPARAM(0), LPARAM(0));
+        return unsafe {
+            PostMessageW(Some(existing), WM_APP_WAKE_INSTANCE, WPARAM(0), LPARAM(0))
+        }
+        .is_ok();
+    }
+    false
+}
+
+fn acquire_or_recover_instance(post_update: bool) -> windows::core::Result<Option<SingleInstanceGuard>> {
+    if post_update {
+        for _ in 0..40 {
+            if let Some(guard) = acquire_single_instance_named(INSTANCE_MUTEX_NAME)? {
+                return Ok(Some(guard));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = wake_existing_instance();
+        return Ok(None);
+    }
+
+    if let Some(guard) = acquire_single_instance_named(INSTANCE_MUTEX_NAME)? {
+        return Ok(Some(guard));
+    }
+    if wake_existing_instance() {
+        return Ok(None);
+    }
+    // Chờ ngắn phòng trường hợp một phiên vừa mở đang dựng cửa sổ.
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_millis(150));
+        if let Some(guard) = acquire_single_instance_named(INSTANCE_MUTEX_NAME)? {
+            return Ok(Some(guard));
+        }
+        if wake_existing_instance() {
+            return Ok(None);
         }
     }
+
+    append_startup_log("Phát hiện tiến trình cũ giữ Mutex nhưng không có cửa sổ trên Desktop hiện tại; tiến hành thu hồi.");
+    install::stop_running_instance_and_wait();
+    acquire_single_instance_named(INSTANCE_MUTEX_NAME)
 }
 
 struct ComApartmentGuard(bool);
@@ -170,26 +206,8 @@ fn create_window_with_startup_retry() -> windows::core::Result<IslandWindow> {
 
 fn run() -> windows::core::Result<()> {
     let post_update = std::env::args().any(|arg| arg == updater::POST_UPDATE_ARG);
-    let _instance_guard = if post_update {
-        let mut acquired = None;
-        for _ in 0..40 {
-            if let Some(guard) = acquire_single_instance_named(INSTANCE_MUTEX_NAME)? {
-                acquired = Some(guard);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let Some(guard) = acquired else {
-            wake_existing_instance();
-            return Ok(());
-        };
-        guard
-    } else {
-        let Some(guard) = acquire_single_instance_named(INSTANCE_MUTEX_NAME)? else {
-            wake_existing_instance();
-            return Ok(());
-        };
-        guard
+    let Some(_instance_guard) = acquire_or_recover_instance(post_update)? else {
+        return Ok(());
     };
 
     updater::spawn_cleanup_old_binary();

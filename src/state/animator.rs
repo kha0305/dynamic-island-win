@@ -10,6 +10,7 @@ pub fn target_top_for_mode(mode: IslandMode) -> f32 {
         IslandMode::Hidden | IslandMode::Slim => 0.0,
         IslandMode::Compact => 2.0,
         IslandMode::Expanded
+        | IslandMode::AntiExpanded
         | IslandMode::Settings
         | IslandMode::AudioDevices
         | IslandMode::Notice => TOP_MARGIN_DIP,
@@ -20,9 +21,10 @@ pub fn target_dimensions_for_mode(mode: IslandMode) -> (f32, f32, f32, f32) {
     match mode {
         IslandMode::Hidden => (116.0, 4.0, 2.0, 0.0),
         IslandMode::Slim => (152.0, 16.0, 8.0, 1.0),
-        IslandMode::Compact => (316.0, 40.0, 20.0, 1.0),
+        IslandMode::Compact => (338.0, 40.0, 20.0, 1.0),
         IslandMode::Expanded => (424.0, 160.0, 28.0, 1.0),
-        IslandMode::Settings => (424.0, 398.0, 26.0, 1.0),
+        IslandMode::AntiExpanded => (424.0, 154.0, 28.0, 1.0),
+        IslandMode::Settings => (424.0, 436.0, 26.0, 1.0),
         IslandMode::AudioDevices => (
             424.0,
             audio_devices_height_for_count(MAX_AUDIO_DEVICES_VISIBLE),

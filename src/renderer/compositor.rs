@@ -112,6 +112,7 @@ pub(super) enum CompositionHost {
         root: ContainerVisual,
         backdrop: Option<WinRtBackdropLayer>,
         shelf_backdrop: Option<WinRtBackdropLayer>,
+        left_anti_backdrop: Option<WinRtBackdropLayer>,
         graphics_device: CompositionGraphicsDevice,
         _drawing_surface: CompositionDrawingSurface,
         surface_brush: CompositionSurfaceBrush,
@@ -195,12 +196,14 @@ impl CompositionHost {
         &mut self,
         pill: PillRectDip,
         shelf: Option<PillRectDip>,
+        left_anti: Option<PillRectDip>,
         opacity: f32,
         dpi_scale: f32,
     ) {
         let Self::WinRtGlass {
             backdrop,
             shelf_backdrop,
+            left_anti_backdrop,
             ..
         } = self
         else {
@@ -217,12 +220,20 @@ impl CompositionHost {
                 hide_layer_geometry(shelf_layer);
             }
         }
+        if let Some(left_layer) = left_anti_backdrop.as_mut() {
+            if let Some(left_rect) = left_anti {
+                update_layer_geometry(left_layer, left_rect, opacity, dpi_scale);
+            } else {
+                hide_layer_geometry(left_layer);
+            }
+        }
     }
 
     pub(super) fn hide_backdrop(&mut self) {
         if let Self::WinRtGlass {
             backdrop,
             shelf_backdrop,
+            left_anti_backdrop,
             ..
         } = self
         {
@@ -231,6 +242,9 @@ impl CompositionHost {
             }
             if let Some(shelf_layer) = shelf_backdrop.as_mut() {
                 hide_layer_geometry(shelf_layer);
+            }
+            if let Some(left_layer) = left_anti_backdrop.as_mut() {
+                hide_layer_geometry(left_layer);
             }
         }
     }
@@ -246,6 +260,7 @@ impl CompositionHost {
                 root,
                 backdrop,
                 shelf_backdrop,
+                left_anti_backdrop,
                 graphics_device,
                 _drawing_surface,
                 surface_brush,
@@ -279,6 +294,9 @@ impl CompositionHost {
                     layer.last_state = BackdropState::HIDDEN;
                 }
                 if let Some(layer) = shelf_backdrop {
+                    layer.last_state = BackdropState::HIDDEN;
+                }
+                if let Some(layer) = left_anti_backdrop {
                     layer.last_state = BackdropState::HIDDEN;
                 }
                 Ok(())
@@ -562,6 +580,7 @@ fn try_init_winrt_glass(
 
     let backdrop = create_winrt_backdrop_layer(&compositor, &root);
     let shelf_backdrop = create_winrt_backdrop_layer(&compositor, &root);
+    let left_anti_backdrop = create_winrt_backdrop_layer(&compositor, &root);
 
     let content_visual = compositor.CreateSpriteVisual()?;
     content_visual.SetBrush(&surface_brush)?;
@@ -583,6 +602,7 @@ fn try_init_winrt_glass(
         root,
         backdrop,
         shelf_backdrop,
+        left_anti_backdrop,
         graphics_device,
         _drawing_surface: drawing_surface,
         surface_brush,

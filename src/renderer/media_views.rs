@@ -173,13 +173,61 @@ impl IslandRenderer {
         }
 
         let content_left = art_x + art_size + 9.0;
-        let content_right = (p.left + p.width - 38.0).max(content_left + 40.0);
+        let content_right = (p.left + p.width - 62.0).max(content_left + 40.0);
         let cy = p.top + p.height * 0.5;
         let right_cap_cx = p.left + p.width - 20.0;
 
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
         let accent = self.brushes.accent.clone();
+
+        fill_compact_media_hitboxes(p, &mut self.hitbox_scratch);
+        if let Some(audio_hb) = self.hitbox_scratch.first().copied() {
+            let hovered = input.hovered_action == Some(UiAction::OpenAudioDevices);
+            if hovered {
+                let hover_pill = D2D1_ROUNDED_RECT {
+                    rect: D2D_RECT_F {
+                        left: audio_hb.rect.left,
+                        top: audio_hb.rect.top,
+                        right: audio_hb.rect.right,
+                        bottom: audio_hb.rect.bottom,
+                    },
+                    radiusX: 9.0,
+                    radiusY: 9.0,
+                };
+                unsafe {
+                    canvas
+                        .ctx
+                        .FillRoundedRectangle(&hover_pill, &self.brushes.surface_hover);
+                }
+            }
+            let icon_brush = if input.volume_snapshot.muted {
+                self.brushes.danger_border.clone()
+            } else if hovered {
+                self.brushes.text_primary.clone()
+            } else {
+                self.brushes.text_secondary.clone()
+            };
+            let icon_cx = audio_hb.rect.left + audio_hb.rect.width() * 0.5;
+            let icon_cy = audio_hb.rect.top + audio_hb.rect.height() * 0.5;
+            let icon_lvl = if input.volume_snapshot.available {
+                input.volume_snapshot.level
+            } else {
+                0.65
+            };
+            unsafe {
+                self.draw_audio_output_icon(
+                    canvas,
+                    icon_cx,
+                    icon_cy,
+                    input.current_audio_device_kind,
+                    icon_lvl,
+                    input.volume_snapshot.muted,
+                    0.82,
+                    &icon_brush,
+                );
+            }
+        }
 
         if input.media.has_session {
             let sub_label = if !input.media.artist.trim().is_empty() {

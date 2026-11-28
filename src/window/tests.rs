@@ -63,7 +63,7 @@ fn wasapi_audio_monitor_connects_and_shuts_down_cleanly() {
                     assert!(initial);
                     received_power = true;
                 }
-                HudWorkerEvent::DevicesChanged { .. } => {
+                HudWorkerEvent::DevicesChanged { .. } | HudWorkerEvent::DeviceChanged(_) => {
                     received_devices = true;
                 }
                 other => {
@@ -90,7 +90,9 @@ fn wasapi_audio_monitor_connects_and_shuts_down_cleanly() {
             assert!(received_devices, "AudioMonitor phai gui DevicesChanged khi co endpoint");
         }
         HudWorkerEvent::AudioUnavailable => {}
-        HudWorkerEvent::DevicesChanged { .. } | HudWorkerEvent::PowerSync { .. } => unreachable!(),
+        HudWorkerEvent::DevicesChanged { .. }
+        | HudWorkerEvent::DeviceChanged(_)
+        | HudWorkerEvent::PowerSync { .. } => unreachable!(),
     }
 
     drop(monitor);
@@ -197,6 +199,9 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             audio_devices: Vec::new(),
             audio_device_scroll: 0,
             current_audio_device_name: None,
+            current_audio_device_kind: AudioOutputKind::Speaker,
+            hud_device_name: None,
+            hud_device_container_key: None,
             volume_snapshot: VolumeSnapshot {
                 level: 0.50,
                 muted: false,
@@ -211,6 +216,7 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             tray_retry_attempts: 0,
             last_region: None,
             last_shelf_region: None,
+            last_left_anti_region: None,
             last_bridge_region: None,
             last_window_rect: None,
             hitbox_scratch: Vec::with_capacity(12),
@@ -223,9 +229,9 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             active_notice: None,
             update_in_progress: false,
             anti_watcher: None,
-            anti_snapshot: None,
-            anti_banner_active: false,
-            foreground_is_anti: false,
+            anti_slots: Vec::new(),
+            dismissed_anti_keys: Vec::new(),
+            anti_expanded_key: None,
             anti_hooks_installed: false,
             anti_spinner_phase: 0.0,
             shelf: ShelfState::default(),
@@ -463,6 +469,7 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
                 .map(|idx| AudioOutputDevice {
                     id: format!("dev-{idx}"),
                     name: format!("Speaker Device {idx}"),
+                    kind: AudioOutputKind::Speaker,
                     is_default: idx == 0,
                 })
                 .collect();
@@ -889,6 +896,176 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             let _ = std::fs::remove_file(&f1);
             let _ = std::fs::remove_file(&f2);
             let _ = std::fs::remove_dir(&tmp_dir);
+        }
+
+        // 18. Bấm icon thiết bị âm thanh trên Compact mở nhanh AudioDevices; HUD thiết bị Bluetooth & bật/tắt; AntiExpanded & DismissAnti.
+        {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            ctrl.config.visible = true;
+            ctrl.config.hud_device_enabled = true;
+            ctrl.active_hud = None;
+            ctrl.anti_slots.clear();
+            ctrl.dismissed_anti_keys.clear();
+            ctrl.anti_expanded_key = None;
+            ctrl.media_state = MediaDisplayState {
+                has_session: true,
+                is_playing: true,
+                ..MediaDisplayState::default()
+            };
+            ctrl.requested_mode = IslandMode::Compact;
+            ctrl.animator = IslandAnimator::new(IslandMode::Compact);
+        }
+        let compact_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
+        let mut c_boxes = Vec::new();
+        fill_compact_media_hitboxes(compact_pill, &mut c_boxes);
+        let audio_icon_rect = c_boxes[0].rect;
+        let ax = (audio_icon_rect.left + audio_icon_rect.width() * 0.5).round() as i32;
+        let ay = (audio_icon_rect.top + audio_icon_rect.height() * 0.5).round() as i32;
+        unsafe {
+            window_proc(hwnd, WM_LBUTTONDOWN, WPARAM(1), make_lparam_xy(ax, ay));
+            window_proc(hwnd, WM_LBUTTONUP, WPARAM(0), make_lparam_xy(ax, ay));
+        }
+        {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            assert_eq!(ctrl.current_effective_mode(), IslandMode::AudioDevices);
+            ctrl.execute_ui_action(UiAction::BackToMedia);
+            assert_eq!(ctrl.current_effective_mode(), IslandMode::Compact);
+
+            ctrl.hud_device_name = Some(String::from("Diamond Stereo"));
+            ctrl.hud_device_container_key = Some(String::from("{BT1}"));
+            ctrl.show_hud_with_duration(
+                HudContent::Device {
+                    category: DeviceHudCategory::Bluetooth,
+                    connected: true,
+                    battery_percent: Some(85),
+                },
+                DEVICE_HUD_EXPIRE_DELAY_MS,
+            );
+            assert!(matches!(
+                ctrl.active_hud,
+                Some(HudContent::Device {
+                    category: DeviceHudCategory::Bluetooth,
+                    connected: true,
+                    battery_percent: Some(85)
+                })
+            ));
+            ctrl.execute_ui_action(UiAction::ToggleHudDevice);
+            assert!(!ctrl.config.hud_device_enabled);
+            assert!(ctrl.active_hud.is_none());
+            ctrl.config.hud_device_enabled = true;
+
+            ctrl.anti_slots = vec![AntiProgressSnapshot {
+                source: crate::anti::AntiSource::AntiIde,
+                conversation_id: String::from("conv-ide"),
+                state: AntiAgentState::WaitingApproval,
+                detail: String::from("Chờ bạn xác nhận"),
+                recent_steps: vec![String::from("Đang chờ duyệt: Chờ bạn xác nhận")],
+                had_error: false,
+                updated_unix_ms: now_unix_ms(),
+            }];
+            ctrl.requested_mode = IslandMode::Compact;
+            ctrl.animator = IslandAnimator::new(IslandMode::Compact);
+        }
+        let cp_anti = get_controller_mut(hwnd).unwrap().animator.current_pill();
+        let anti_x = (cp_anti.left + 80.0).round() as i32;
+        let anti_y = (cp_anti.top + 16.0).round() as i32;
+        unsafe {
+            window_proc(hwnd, WM_LBUTTONDOWN, WPARAM(1), make_lparam_xy(anti_x, anti_y));
+            window_proc(hwnd, WM_LBUTTONUP, WPARAM(0), make_lparam_xy(anti_x, anti_y));
+        }
+        {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            assert_eq!(ctrl.current_effective_mode(), IslandMode::AntiExpanded);
+            ctrl.execute_ui_action(UiAction::DismissAnti);
+            assert!(ctrl.anti_display_snapshot().is_none());
+            assert_ne!(ctrl.current_effective_mode(), IslandMode::AntiExpanded);
+        }
+
+        // 19. Mở 2 Anti đồng thời: chính ở giữa, phụ bên trái; bấm viên trái mở AntiExpanded đúng phiên phụ & xuyên chuột khoảng trống.
+        {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            ctrl.dismissed_anti_keys.clear();
+            ctrl.anti_expanded_key = None;
+            let now = now_unix_ms();
+            ctrl.anti_slots = vec![
+                AntiProgressSnapshot {
+                    source: crate::anti::AntiSource::AgyCli,
+                    conversation_id: String::from("conv-cli"),
+                    state: AntiAgentState::Building,
+                    detail: String::from("cargo build"),
+                    recent_steps: vec![String::from("Đang build: cargo build")],
+                    had_error: false,
+                    updated_unix_ms: now,
+                },
+                AntiProgressSnapshot {
+                    source: crate::anti::AntiSource::AntiIde,
+                    conversation_id: String::from("conv-ide-2"),
+                    state: AntiAgentState::Coding,
+                    detail: String::from("Sửa renderer"),
+                    recent_steps: vec![String::from("Đang code: Sửa renderer")],
+                    had_error: false,
+                    updated_unix_ms: now.saturating_sub(200),
+                },
+            ];
+            ctrl.requested_mode = IslandMode::Slim;
+            ctrl.animator = IslandAnimator::new(IslandMode::Compact);
+            ctrl.apply_target_and_render();
+            assert_eq!(
+                ctrl.anti_display_snapshot().map(|s| s.source),
+                Some(crate::anti::AntiSource::AgyCli)
+            );
+            assert_eq!(
+                ctrl.anti_secondary_snapshot().map(|s| s.source),
+                Some(crate::anti::AntiSource::AntiIde)
+            );
+        }
+        let (left_pt, gap_pt) = {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            let pill = ctrl.animator.current_pill();
+            let left_rect = ctrl.active_left_anti_rect(pill).expect("left anti rect");
+            assert!(left_rect.left + left_rect.width <= pill.left - 8.0);
+            let l_pt = pill_to_screen(left_rect.left + 40.0, left_rect.top + 16.0);
+            let g_pt = pill_to_screen(pill.left - 5.0, left_rect.top + 16.0);
+            (l_pt, g_pt)
+        };
+        assert_eq!(
+            unsafe { window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(left_pt.x, left_pt.y)) }.0,
+            HTCLIENT as isize
+        );
+        assert_eq!(
+            unsafe { window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(gap_pt.x, gap_pt.y)) }.0,
+            HTTRANSPARENT as isize
+        );
+        let left_click_local = {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            let lr = ctrl.active_left_anti_rect(ctrl.animator.current_pill()).unwrap();
+            ((lr.left + 30.0).round() as i32, (lr.top + 16.0).round() as i32)
+        };
+        unsafe {
+            window_proc(
+                hwnd,
+                WM_LBUTTONDOWN,
+                WPARAM(1),
+                make_lparam_xy(left_click_local.0, left_click_local.1),
+            );
+            window_proc(
+                hwnd,
+                WM_LBUTTONUP,
+                WPARAM(0),
+                make_lparam_xy(left_click_local.0, left_click_local.1),
+            );
+        }
+        {
+            let ctrl = get_controller_mut(hwnd).unwrap();
+            assert_eq!(ctrl.current_effective_mode(), IslandMode::AntiExpanded);
+            assert_eq!(
+                ctrl.anti_display_snapshot().map(|s| s.source),
+                Some(crate::anti::AntiSource::AntiIde)
+            );
+            assert_eq!(
+                ctrl.anti_secondary_snapshot().map(|s| s.source),
+                Some(crate::anti::AntiSource::AgyCli)
+            );
         }
 
         unsafe {

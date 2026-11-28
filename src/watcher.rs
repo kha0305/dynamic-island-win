@@ -7,7 +7,8 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_NAME_FORMAT,
+    PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -15,11 +16,14 @@ use windows::Win32::UI::Shell::{
     QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP,
+    ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, EVENT_SYSTEM_FOREGROUND, EnumWindows,
+    GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, PostMessageW, SW_RESTORE, SetForegroundWindow, ShowWindow,
+    SwitchToThisWindow, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 use windows::core::{BOOL, PWSTR};
+
+use crate::anti::{AntiSource, classify_exe_name_to_source, collect_target_pids_for_source};
 
 pub const WM_APP_FOREGROUND_CHANGED: u32 = WM_APP + 4;
 const MONITORINFOF_PRIMARY: u32 = 1;
@@ -317,50 +321,188 @@ pub fn is_anti_process_or_title(exe_name: &str, window_title: &str) -> bool {
     false
 }
 
-pub fn is_foreground_anti_app(island_hwnd: HWND) -> bool {
-    let fg = unsafe { GetForegroundWindow() };
-    if fg.is_invalid() || fg == island_hwnd {
-        return false;
+pub fn window_matches_anti_source(source: AntiSource, exe_name: &str, window_title: &str) -> bool {
+    let exe = exe_name.trim().to_ascii_lowercase();
+    let title = window_title.trim().to_ascii_lowercase();
+    match source {
+        AntiSource::AntiIde => {
+            (exe.contains("antigravity") && exe.contains("ide"))
+                || (exe == "code.exe" && title.contains("antigravity"))
+        }
+        AntiSource::AgyCli => {
+            exe.starts_with("agy")
+                || (is_terminal_exe(&exe) && (title.contains("agy") || title.contains("antigravity")))
+        }
+        AntiSource::AntiApp => exe.contains("antigravity") && !exe.contains("ide"),
+        AntiSource::Antigravity => is_anti_process_or_title(&exe, &title),
+    }
+}
+
+fn is_terminal_exe(exe_lower: &str) -> bool {
+    matches!(
+        exe_lower,
+        "windowsterminal.exe"
+            | "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "conhost.exe"
+            | "alacritty.exe"
+            | "wezterm-gui.exe"
+            | "mintty.exe"
+            | "code.exe"
+    )
+}
+
+fn read_hwnd_exe_name(hwnd: HWND) -> String {
+    let mut pid = 0_u32;
+    let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return String::new();
+    }
+    let Ok(proc_handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return String::new();
+    };
+    let mut buf = [0_u16; 520];
+    let mut len = buf.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            proc_handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    unsafe {
+        let _ = CloseHandle(proc_handle);
+    }
+    if ok.is_ok() && len > 0 {
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        std::path::Path::new(&full)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    }
+}
+
+fn read_hwnd_title(hwnd: HWND) -> String {
+    let mut title_buf = [0_u16; 256];
+    let len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
+    if len > 0 {
+        String::from_utf16_lossy(&title_buf[..len as usize])
+    } else {
+        String::new()
+    }
+}
+
+struct AntiFocusSearch {
+    island_hwnd: HWND,
+    source: AntiSource,
+    target_pids: Vec<u32>,
+    exact_match: Option<HWND>,
+    fallback_match: Option<HWND>,
+}
+
+unsafe extern "system" fn find_anti_window_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let search = unsafe { &mut *(lparam.0 as *mut AntiFocusSearch) };
+    if hwnd.is_invalid() || hwnd == search.island_hwnd || !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return BOOL(1);
+    }
+    let mut cloaked = 0_u32;
+    if unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    }
+    .is_ok()
+        && cloaked != 0
+    {
+        return BOOL(1);
+    }
+    if !unsafe { IsIconic(hwnd) }.as_bool() {
+        let mut rc = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err()
+            || (rc.right - rc.left) < 80
+            || (rc.bottom - rc.top) < 80
+        {
+            return BOOL(1);
+        }
+    }
+    let title = read_hwnd_title(hwnd);
+    if title.trim().is_empty() {
+        return BOOL(1);
+    }
+    let exe = read_hwnd_exe_name(hwnd);
+    if matches!(
+        (search.source, classify_exe_name_to_source(&exe)),
+        (
+            AntiSource::AgyCli,
+            Some(AntiSource::AntiIde | AntiSource::AntiApp)
+        )
+    ) {
+        return BOOL(1);
     }
     let mut pid = 0_u32;
-    let _ = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
-    let exe_name = if pid != 0
-        && let Ok(proc_handle) = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
-    {
-        let mut buf = [0_u16; 520];
-        let mut len = buf.len() as u32;
-        let ok = unsafe {
-            QueryFullProcessImageNameW(
-                proc_handle,
-                PROCESS_NAME_FORMAT(0),
-                PWSTR(buf.as_mut_ptr()),
-                &mut len,
-            )
-        };
-        unsafe {
-            let _ = CloseHandle(proc_handle);
-        }
-        if ok.is_ok() && len > 0 {
-            let full = String::from_utf16_lossy(&buf[..len as usize]);
-            std::path::Path::new(&full)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let _ = unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid != 0 && search.target_pids.contains(&pid) {
+        search.exact_match = Some(hwnd);
+        return BOOL(0);
+    }
+    if search.fallback_match.is_none() && window_matches_anti_source(search.source, &exe, &title) {
+        search.fallback_match = Some(hwnd);
+    }
+    BOOL(1)
+}
 
-    let mut title_buf = [0_u16; 256];
-    let title_len = unsafe { GetWindowTextW(fg, &mut title_buf) };
-    let title = if title_len > 0 {
-        String::from_utf16_lossy(&title_buf[..title_len as usize])
-    } else {
-        String::new()
+pub fn focus_anti_window(island_hwnd: HWND, source: AntiSource) -> bool {
+    let target_pids = collect_target_pids_for_source(source);
+    let mut search = AntiFocusSearch {
+        island_hwnd,
+        source,
+        target_pids,
+        exact_match: None,
+        fallback_match: None,
     };
-    is_anti_process_or_title(&exe_name, &title)
+    let ptr = &mut search as *mut AntiFocusSearch;
+    unsafe {
+        let _ = EnumWindows(Some(find_anti_window_proc), LPARAM(ptr as isize));
+    }
+    let Some(target) = search.exact_match.or(search.fallback_match) else {
+        return false;
+    };
+    unsafe {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        if IsIconic(target).as_bool() {
+            let _ = ShowWindow(target, SW_RESTORE);
+        }
+        if SetForegroundWindow(target).as_bool() && GetForegroundWindow() == target {
+            return true;
+        }
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.is_invalid() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let cur_tid = GetCurrentThreadId();
+        let attached = fg_tid != 0
+            && fg_tid != cur_tid
+            && AttachThreadInput(cur_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(target);
+        let ok = SetForegroundWindow(target).as_bool();
+        if attached {
+            let _ = AttachThreadInput(cur_tid, fg_tid, false);
+        }
+        if !ok || GetForegroundWindow() != target {
+            SwitchToThisWindow(target, true);
+        }
+        GetForegroundWindow() == target || ok
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +518,27 @@ mod tests {
             "Administrator: agy"
         ));
         assert!(!is_anti_process_or_title("chrome.exe", "Antigravity docs"));
+
+        assert!(window_matches_anti_source(
+            AntiSource::AntiIde,
+            "Antigravity IDE.exe",
+            "win-dynamic-island"
+        ));
+        assert!(!window_matches_anti_source(
+            AntiSource::AntiIde,
+            "Antigravity.exe",
+            "Antigravity"
+        ));
+        assert!(window_matches_anti_source(
+            AntiSource::AntiApp,
+            "Antigravity.exe",
+            "Antigravity"
+        ));
+        assert!(window_matches_anti_source(
+            AntiSource::AgyCli,
+            "WindowsTerminal.exe",
+            "agy - session"
+        ));
     }
 
     #[test]

@@ -22,7 +22,7 @@ impl IslandRenderer {
             return;
         }
         unsafe {
-            self.draw_pill_shell(canvas, shelf_rect, opacity, has_backdrop, false);
+            self.draw_pill_shell(canvas, shelf_rect, opacity, has_backdrop, false, None);
         }
 
         if shelf.drag_hover {

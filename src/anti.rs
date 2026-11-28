@@ -16,7 +16,12 @@ use windows::Win32::Storage::FileSystem::{
     FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, OPEN_EXISTING, ReadDirectoryChangesW,
 };
-use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent, WaitForMultipleObjects};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcessId, ResetEvent, SetEvent, WaitForMultipleObjects,
+};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use windows::core::PCWSTR;
 
@@ -30,8 +35,12 @@ pub const WM_APP_ANTI_UPDATE: u32 = WM_APP + 8;
 pub const ANTI_HOOK_FLAG: &str = "--anti-hook";
 const ANTI_HOOK_KEY: &str = "win-dynamic-island-status";
 const ANTI_PROGRESS_FILE_NAME: &str = "anti-progress.json";
+const ANTI_SESSIONS_DIR_NAME: &str = "anti-sessions";
+const IDE_TRANSCRIPT_FILE_NAME: &str = "transcript.jsonl";
 /// Nếu trạng thái đang chạy không cập nhật quá 6 phút thì coi như phiên đã kết thúc/treo.
 const STALE_RUNNING_MS: u64 = 360_000;
+const IDE_STARTUP_RECENT_MS: u64 = 15_000;
+const SESSION_RETENTION_MS: u64 = 1_800_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AntiAgentState {
@@ -142,23 +151,37 @@ pub struct AntiProgressSnapshot {
     pub conversation_id: String,
     pub state: AntiAgentState,
     pub detail: String,
+    pub recent_steps: Vec<String>,
     pub had_error: bool,
     pub updated_unix_ms: u64,
 }
 
 impl AntiProgressSnapshot {
+    pub fn slot_key(&self) -> String {
+        if self.conversation_id.trim().is_empty() {
+            self.source.as_key().to_string()
+        } else {
+            format!("{}:{}", self.source.as_key(), self.conversation_id)
+        }
+    }
+
     pub fn is_stale(&self, now_ms: u64) -> bool {
+        if self.state == AntiAgentState::WaitingApproval {
+            return now_ms.saturating_sub(self.updated_unix_ms) > STALE_RUNNING_MS * 3;
+        }
         self.state.is_running() && now_ms.saturating_sub(self.updated_unix_ms) > STALE_RUNNING_MS
     }
 
     pub fn to_json(&self) -> String {
+        let joined_steps = self.recent_steps.join("\n");
         format!(
-            "{{\n  \"source\": \"{}\",\n  \"conversation_id\": \"{}\",\n  \"state\": \"{}\",\n  \"label\": \"{}\",\n  \"detail\": \"{}\",\n  \"active\": {},\n  \"had_error\": {},\n  \"updated_unix_ms\": {}\n}}\n",
+            "{{\n  \"source\": \"{}\",\n  \"conversation_id\": \"{}\",\n  \"state\": \"{}\",\n  \"label\": \"{}\",\n  \"detail\": \"{}\",\n  \"recent_steps\": \"{}\",\n  \"active\": {},\n  \"had_error\": {},\n  \"updated_unix_ms\": {}\n}}\n",
             self.source.as_key(),
             escape_json_string(&self.conversation_id),
             self.state.as_key(),
             escape_json_string(self.state.label_vi()),
             escape_json_string(&self.detail),
+            escape_json_string(&joined_steps),
             self.state.is_running(),
             self.had_error,
             self.updated_unix_ms,
@@ -174,6 +197,16 @@ impl AntiProgressSnapshot {
         let conversation_id =
             extract_json_string_field_top_level(raw, "conversation_id").unwrap_or_default();
         let detail = extract_json_string_field_top_level(raw, "detail").unwrap_or_default();
+        let recent_steps = extract_json_string_field_top_level(raw, "recent_steps")
+            .map(|s| {
+                s.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .take(3)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         let had_error = extract_json_bool_field_top_level(raw, "had_error").unwrap_or(false);
         let updated_unix_ms =
             extract_json_u64_field_top_level(raw, "updated_unix_ms").unwrap_or(0);
@@ -182,6 +215,7 @@ impl AntiProgressSnapshot {
             conversation_id,
             state,
             detail,
+            recent_steps,
             had_error,
             updated_unix_ms,
         })
@@ -204,6 +238,23 @@ pub fn anti_progress_dir() -> Option<PathBuf> {
 
 pub fn anti_progress_path() -> Option<PathBuf> {
     Some(anti_progress_dir()?.join(ANTI_PROGRESS_FILE_NAME))
+}
+
+fn anti_sessions_dir() -> Option<PathBuf> {
+    Some(anti_progress_dir()?.join(ANTI_SESSIONS_DIR_NAME))
+}
+
+fn ide_brain_dir() -> Option<PathBuf> {
+    let profile = std::env::var_os("USERPROFILE")?;
+    if profile.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(profile)
+            .join(".gemini")
+            .join("antigravity")
+            .join("brain"),
+    )
 }
 
 pub fn write_anti_progress_atomic(path: &Path, snap: &AntiProgressSnapshot) -> Result<(), String> {
@@ -240,6 +291,265 @@ pub fn detect_source_from_paths(transcript_path: Option<&str>, artifact_dir: Opt
     AntiSource::Antigravity
 }
 
+pub fn classify_exe_name_to_source(exe_name: &str) -> Option<AntiSource> {
+    let file_name = Path::new(exe_name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| exe_name.trim().to_ascii_lowercase());
+    if file_name == "agy.exe"
+        || file_name.starts_with("agy-")
+        || file_name == "antigravity-cli.exe"
+    {
+        return Some(AntiSource::AgyCli);
+    }
+    if file_name.contains("antigravity") && file_name.contains("ide") {
+        return Some(AntiSource::AntiIde);
+    }
+    if file_name == "antigravity.exe"
+        || (file_name.contains("antigravity") && !file_name.contains("cli"))
+    {
+        return Some(AntiSource::AntiApp);
+    }
+    None
+}
+
+pub struct AntiEnvHints<'a> {
+    pub ls_version: Option<&'a str>,
+    pub jetski_app_data_dir: Option<&'a str>,
+    pub agentapi_exe: Option<&'a str>,
+    pub vscode_pid_exe: Option<&'a str>,
+}
+
+pub fn classify_anti_source_inputs(
+    env: &AntiEnvHints<'_>,
+    ancestor_exes: &[String],
+    running_exes: &[String],
+    transcript_path: Option<&str>,
+    artifact_dir: Option<&str>,
+) -> AntiSource {
+    if let Some(ver) = env.ls_version
+        && ver.trim().to_ascii_lowercase().starts_with("cli-")
+    {
+        return AntiSource::AgyCli;
+    }
+    if let Some(app_dir) = env.jetski_app_data_dir {
+        match app_dir.trim().to_ascii_lowercase().as_str() {
+            "antigravity-cli" => return AntiSource::AgyCli,
+            "antigravity-ide" => return AntiSource::AntiIde,
+            _ => {}
+        }
+    }
+    if let Some(exe) = env.agentapi_exe
+        && let Some(src) = classify_exe_name_to_source(exe)
+    {
+        return src;
+    }
+    if let Some(vsc_exe) = env.vscode_pid_exe
+        && let Some(src) = classify_exe_name_to_source(vsc_exe)
+    {
+        return src;
+    }
+
+    for exe in ancestor_exes {
+        if let Some(src) = classify_exe_name_to_source(exe) {
+            return src;
+        }
+    }
+
+    let path_guess = detect_source_from_paths(transcript_path, artifact_dir);
+    if path_guess == AntiSource::AntiApp {
+        let has_ide = running_exes
+            .iter()
+            .any(|e| classify_exe_name_to_source(e) == Some(AntiSource::AntiIde));
+        let has_app = running_exes
+            .iter()
+            .any(|e| classify_exe_name_to_source(e) == Some(AntiSource::AntiApp));
+        if has_ide && !has_app {
+            return AntiSource::AntiIde;
+        }
+        if has_app {
+            return AntiSource::AntiApp;
+        }
+        return AntiSource::Antigravity;
+    }
+    path_guess
+}
+
+fn collect_process_ancestors_and_running(vscode_pid: Option<u32>) -> (Vec<String>, Vec<String>, Option<String>) {
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return (Vec::new(), Vec::new(), None);
+    };
+    let _guard = HandleGuard(snapshot);
+
+    let mut entries: Vec<(u32, u32, String)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+        loop {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                break;
+            }
+        }
+    }
+
+    let mut ancestors = Vec::new();
+    let mut visited = Vec::with_capacity(10);
+    let mut cur_pid = unsafe { GetCurrentProcessId() };
+    for _ in 0..10 {
+        if visited.contains(&cur_pid) {
+            break;
+        }
+        visited.push(cur_pid);
+        let Some((_, ppid, _)) = entries.iter().find(|(pid, _, _)| *pid == cur_pid) else {
+            break;
+        };
+        if *ppid == 0 || *ppid == cur_pid {
+            break;
+        }
+        if let Some((_, _, p_name)) = entries.iter().find(|(pid, _, _)| *pid == *ppid) {
+            ancestors.push(p_name.clone());
+        }
+        cur_pid = *ppid;
+    }
+
+    let vscode_exe = vscode_pid.and_then(|target| {
+        entries
+            .iter()
+            .find(|(pid, _, _)| *pid == target)
+            .map(|(_, _, name)| name.clone())
+    });
+
+    let running = entries
+        .into_iter()
+        .map(|(_, _, name)| name)
+        .filter(|name| classify_exe_name_to_source(name).is_some())
+        .collect();
+    (ancestors, running, vscode_exe)
+}
+
+pub fn detect_source_from_runtime(transcript_path: Option<&str>, artifact_dir: Option<&str>) -> AntiSource {
+    let ls_ver = std::env::var("ANTIGRAVITY_LS_VERSION").ok();
+    let jetski_dir = std::env::var("JETSKI_APP_DATA_DIR").ok();
+    let agentapi_exe = std::env::var("ANTIGRAVITY_AGENTAPI_EXE").ok();
+    let vscode_pid = std::env::var("VSCODE_PID")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok());
+    let (ancestors, running, vscode_exe) = collect_process_ancestors_and_running(vscode_pid);
+    let env = AntiEnvHints {
+        ls_version: ls_ver.as_deref(),
+        jetski_app_data_dir: jetski_dir.as_deref(),
+        agentapi_exe: agentapi_exe.as_deref(),
+        vscode_pid_exe: vscode_exe.as_deref(),
+    };
+    classify_anti_source_inputs(&env, &ancestors, &running, transcript_path, artifact_dir)
+}
+
+fn running_anti_exes() -> Vec<String> {
+    collect_process_ancestors_and_running(None).1
+}
+
+fn is_shell_boundary_exe(exe_name: &str) -> bool {
+    let lower = Path::new(exe_name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| exe_name.trim().to_ascii_lowercase());
+    matches!(
+        lower.as_str(),
+        "explorer.exe"
+            | "svchost.exe"
+            | "services.exe"
+            | "wininit.exe"
+            | "csrss.exe"
+            | "smss.exe"
+            | "lsass.exe"
+            | "sihost.exe"
+            | "taskmgr.exe"
+            | "codex-windows-sandbox-service.exe"
+    )
+}
+
+pub fn collect_ancestor_pids_from_entries(
+    entries: &[(u32, u32, String)],
+    source: AntiSource,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (pid, ppid, exe) in entries {
+        if classify_exe_name_to_source(exe) != Some(source) {
+            continue;
+        }
+        let mut chain = vec![*pid];
+        let mut cur_ppid = *ppid;
+        let mut hops = 0_u8;
+        let mut owned_by_other_anti = false;
+        while cur_ppid != 0 && hops < 6 {
+            hops += 1;
+            let Some((_, next_ppid, p_exe)) = entries.iter().find(|(p, _, _)| *p == cur_ppid)
+            else {
+                break;
+            };
+            if is_shell_boundary_exe(p_exe) {
+                break;
+            }
+            if let Some(parent_src) = classify_exe_name_to_source(p_exe)
+                && parent_src != source
+            {
+                // Bỏ qua tiến trình con dùng chung (như `agy.exe --hub` do `Antigravity IDE.exe` sinh ra).
+                owned_by_other_anti = true;
+                break;
+            }
+            chain.push(cur_ppid);
+            if *next_ppid == cur_ppid {
+                break;
+            }
+            cur_ppid = *next_ppid;
+        }
+        if !owned_by_other_anti {
+            for id in chain {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+pub fn collect_target_pids_for_source(source: AntiSource) -> Vec<u32> {
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return Vec::new();
+    };
+    let _guard = HandleGuard(snapshot);
+    let mut entries: Vec<(u32, u32, String)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+        loop {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                break;
+            }
+        }
+    }
+    collect_ancestor_pids_from_entries(&entries, source)
+}
+
 fn sanitize_detail(raw: &str) -> String {
     let compact: String = raw
         .chars()
@@ -249,10 +559,40 @@ fn sanitize_detail(raw: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ");
     let mut out = String::new();
-    for ch in compact.chars().take(48) {
+    for ch in compact.chars().take(96) {
         out.push(ch);
     }
     out
+}
+
+pub fn summarize_command_hint(raw_cmd: &str) -> String {
+    let trimmed = raw_cmd.trim();
+    if trimmed.is_empty() {
+        return String::from("Chạy lệnh hệ thống");
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("cargo test") {
+        return String::from("Chạy kiểm thử Cargo");
+    }
+    if lower.contains("cargo clippy") {
+        return String::from("Kiểm tra Clippy");
+    }
+    if lower.contains("cargo build") {
+        return String::from("Biên dịch ứng dụng");
+    }
+    if lower.contains("cargo check") {
+        return String::from("Kiểm tra biên dịch Cargo");
+    }
+    if lower.starts_with("git ") || lower.contains(" git ") {
+        return String::from("Thao tác Git");
+    }
+    if lower.contains("pytest") || lower.contains("vitest") || lower.contains("npm test") {
+        return String::from("Chạy bộ kiểm thử");
+    }
+    if trimmed.starts_with('$') || trimmed.contains("| ") || trimmed.contains("Get-ChildItem") {
+        return String::from("Truy vấn PowerShell");
+    }
+    sanitize_detail(trimmed)
 }
 
 fn classify_tool_call(
@@ -262,7 +602,7 @@ fn classify_tool_call(
 ) -> (AntiAgentState, String) {
     let name = tool_name.trim().to_ascii_lowercase();
     if name.contains("ask_question") || name.contains("request_feedback") {
-        return (AntiAgentState::WaitingApproval, String::from("Chờ xác nhận"));
+        return (AntiAgentState::WaitingApproval, String::from("Chờ bạn xác nhận"));
     }
     if matches!(
         name.as_str(),
@@ -281,7 +621,12 @@ fn classify_tool_call(
         } else {
             AntiAgentState::Coding
         };
-        return (st, sanitize_detail(&file_hint));
+        let msg = if file_hint.is_empty() {
+            String::from("Chỉnh sửa mã nguồn")
+        } else {
+            format!("Sửa {file_hint}")
+        };
+        return (st, sanitize_detail(&msg));
     }
     if matches!(
         name.as_str(),
@@ -302,13 +647,25 @@ fn classify_tool_call(
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .unwrap_or_default();
-        return (AntiAgentState::ReadingProject, sanitize_detail(&hint));
+        let msg = if hint.is_empty() {
+            String::from("Đọc tệp dự án")
+        } else {
+            format!("Đọc {hint}")
+        };
+        return (AntiAgentState::ReadingProject, sanitize_detail(&msg));
     }
     if name == "run_command" || name == "command_status" {
+        let summary = extract_json_string_field_top_level(tool_args_json, "toolSummary")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let cmd = extract_json_string_field_top_level(tool_args_json, "CommandLine")
-            .or_else(|| extract_json_string_field_top_level(tool_args_json, "toolSummary"))
             .unwrap_or_default();
-        let lower = cmd.to_ascii_lowercase();
+        let lower = format!(
+            "{} {}",
+            summary.as_deref().unwrap_or(""),
+            cmd
+        )
+        .to_ascii_lowercase();
         let st = if lower.contains("test")
             || lower.contains("pytest")
             || lower.contains("vitest")
@@ -328,7 +685,8 @@ fn classify_tool_call(
         } else {
             AntiAgentState::Analyzing
         };
-        return (st, sanitize_detail(&cmd));
+        let display = summary.unwrap_or_else(|| summarize_command_hint(&cmd));
+        return (st, sanitize_detail(&display));
     }
     if had_prev_error {
         return (AntiAgentState::FixingError, sanitize_detail(tool_name));
@@ -338,16 +696,18 @@ fn classify_tool_call(
 
 const TRANSCRIPT_TAIL_MAX_BYTES: u64 = 128 * 1024;
 
-/// Đọc tối đa phần đuôi `transcript.jsonl` để nắm ngay tool đang chuẩn bị chạy mà không nạp cả tệp lớn.
-fn infer_state_from_transcript_tail(
-    transcript_path: &Path,
-    had_prev_error: bool,
-) -> Option<(AntiAgentState, String)> {
+fn read_transcript_tail_text(transcript_path: &Path) -> Option<(String, u64)> {
     let mut file = fs::File::open(transcript_path).ok()?;
-    let file_len = file.metadata().ok()?.len();
+    let meta = file.metadata().ok()?;
+    let file_len = meta.len();
     if file_len == 0 {
         return None;
     }
+    let modified_ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64);
     let start_offset = file_len.saturating_sub(TRANSCRIPT_TAIL_MAX_BYTES);
     if start_offset > 0 {
         file.seek(SeekFrom::Start(start_offset)).ok()?;
@@ -365,8 +725,15 @@ fn infer_state_from_transcript_tail(
     } else {
         &buf[..]
     };
-    let text = String::from_utf8_lossy(tail_bytes);
+    Some((String::from_utf8_lossy(tail_bytes).into_owned(), modified_ms))
+}
 
+/// Đọc tối đa phần đuôi `transcript.jsonl` để nắm ngay tool đang chuẩn bị chạy mà không nạp cả tệp lớn.
+fn infer_state_from_transcript_tail(
+    transcript_path: &Path,
+    had_prev_error: bool,
+) -> Option<(AntiAgentState, String)> {
+    let (text, _) = read_transcript_tail_text(transcript_path)?;
     for line in text.lines().rev().take(8) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -388,17 +755,239 @@ fn infer_state_from_transcript_tail(
     None
 }
 
+fn generic_step_has_error(content: &str, status: &str) -> bool {
+    if status.eq_ignore_ascii_case("ERROR") || status.eq_ignore_ascii_case("FAILED") {
+        return true;
+    }
+    let lower = content.to_ascii_lowercase();
+    if let Some(idx) = lower.find("command exited with code ") {
+        let rest = lower[idx + "command exited with code ".len()..].trim_start();
+        let code_str: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !code_str.is_empty() && code_str != "0" {
+            return true;
+        }
+    }
+    lower.contains("encountered error in tool execution")
+}
+
+pub fn extract_conv_id_from_brain_path(brain_root: &Path, file_path: &Path) -> String {
+    let Ok(rel) = file_path.strip_prefix(brain_root) else {
+        return String::new();
+    };
+    rel.components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty() && !s.starts_with('.'))
+        .unwrap_or_default()
+}
+
+pub fn detect_ide_source_from_exes(running_exes: &[String]) -> AntiSource {
+    let has_ide = running_exes
+        .iter()
+        .any(|e| classify_exe_name_to_source(e) == Some(AntiSource::AntiIde));
+    let has_app = running_exes
+        .iter()
+        .any(|e| classify_exe_name_to_source(e) == Some(AntiSource::AntiApp));
+    if has_ide && !has_app {
+        AntiSource::AntiIde
+    } else if has_app && !has_ide {
+        AntiSource::AntiApp
+    } else if has_ide {
+        AntiSource::AntiIde
+    } else {
+        AntiSource::Antigravity
+    }
+}
+
+pub fn parse_ide_transcript_tail(
+    transcript_path: &Path,
+    conversation_id: &str,
+    source: AntiSource,
+    fallback_now_ms: u64,
+) -> Option<AntiProgressSnapshot> {
+    let (text, modified_ms) = read_transcript_tail_text(transcript_path)?;
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let window = &lines[lines.len().saturating_sub(12)..];
+    let last_line = *window.last()?;
+
+    let mut had_error = false;
+    let mut recent_steps: Vec<String> = Vec::with_capacity(3);
+    let mut last_tool_pair: Option<(AntiAgentState, String)> = None;
+
+    for line in window {
+        let kind = extract_json_string_field_top_level(line, "type").unwrap_or_default();
+        let status = extract_json_string_field_top_level(line, "status").unwrap_or_default();
+        if kind == "GENERIC" {
+            let content = extract_json_string_field_top_level(line, "content").unwrap_or_default();
+            if generic_step_has_error(&content, &status) {
+                had_error = true;
+            }
+        } else if kind == "PLANNER_RESPONSE"
+            && let Some(calls) = crate::json_mini::extract_json_array_section(line, "tool_calls")
+        {
+            for obj in crate::json_mini::iter_json_objects_in_array(calls) {
+                if let Some(name) = extract_json_string_field_top_level(obj, "name") {
+                    let args = extract_json_object_section(obj, "args").unwrap_or("");
+                    let pair = classify_tool_call(&name, args, had_error);
+                    recent_steps = append_recent_step(&recent_steps, pair.0, &pair.1);
+                    last_tool_pair = Some(pair);
+                    had_error = false;
+                }
+            }
+        }
+    }
+
+    let last_kind = extract_json_string_field_top_level(last_line, "type").unwrap_or_default();
+    let last_status = extract_json_string_field_top_level(last_line, "status").unwrap_or_default();
+    let (state, detail, final_err) = match last_kind.as_str() {
+        "USER_INPUT" => (
+            AntiAgentState::Analyzing,
+            String::from("Tiếp nhận yêu cầu"),
+            false,
+        ),
+        "PLANNER_RESPONSE" => {
+            if let Some(calls) =
+                crate::json_mini::extract_json_array_section(last_line, "tool_calls")
+                && let Some(obj) = crate::json_mini::iter_json_objects_in_array(calls)
+                    .into_iter()
+                    .last()
+                && let Some(name) = extract_json_string_field_top_level(obj, "name")
+            {
+                let args = extract_json_object_section(obj, "args").unwrap_or("");
+                let (st, hint) = classify_tool_call(&name, args, had_error);
+                (st, hint, had_error)
+            } else if last_status.eq_ignore_ascii_case("CANCELED")
+                || last_status.eq_ignore_ascii_case("CANCELLED")
+            {
+                (
+                    AntiAgentState::Canceled,
+                    String::from("Người dùng hủy"),
+                    false,
+                )
+            } else if last_status.eq_ignore_ascii_case("DONE")
+                && extract_json_string_field_top_level(last_line, "content")
+                    .is_some_and(|c| !c.trim().is_empty())
+            {
+                (AntiAgentState::Done, String::from("Hoàn tất tác vụ"), false)
+            } else {
+                (
+                    AntiAgentState::Analyzing,
+                    String::from("Đang phân tích"),
+                    had_error,
+                )
+            }
+        }
+        "GENERIC" => {
+            let content =
+                extract_json_string_field_top_level(last_line, "content").unwrap_or_default();
+            if last_status.eq_ignore_ascii_case("CANCELED")
+                || last_status.eq_ignore_ascii_case("CANCELLED")
+            {
+                (
+                    AntiAgentState::Canceled,
+                    String::from("Người dùng hủy"),
+                    false,
+                )
+            } else if last_status.eq_ignore_ascii_case("RUNNING") {
+                if let Some((st, hint)) = last_tool_pair {
+                    (st, hint, had_error)
+                } else {
+                    (
+                        AntiAgentState::Analyzing,
+                        String::from("Đang chạy tác vụ"),
+                        had_error,
+                    )
+                }
+            } else if generic_step_has_error(&content, &last_status) {
+                (
+                    AntiAgentState::FixingError,
+                    String::from("Đang xử lý lỗi"),
+                    true,
+                )
+            } else if let Some((_, hint)) = last_tool_pair {
+                (AntiAgentState::Analyzing, hint, had_error)
+            } else {
+                (
+                    AntiAgentState::Analyzing,
+                    String::from("Đang xử lý kết quả"),
+                    had_error,
+                )
+            }
+        }
+        _ => (AntiAgentState::Analyzing, String::new(), had_error),
+    };
+
+    let updated_unix_ms = if modified_ms > 0 {
+        modified_ms
+    } else {
+        fallback_now_ms
+    };
+    let steps = if recent_steps.is_empty() {
+        append_recent_step(&[], state, &detail)
+    } else {
+        recent_steps
+    };
+    Some(AntiProgressSnapshot {
+        source,
+        conversation_id: conversation_id.to_string(),
+        state,
+        detail,
+        recent_steps: steps,
+        had_error: final_err,
+        updated_unix_ms,
+    })
+}
+
+fn append_recent_step(prev_steps: &[String], state: AntiAgentState, detail: &str) -> Vec<String> {
+    let trimmed = detail.trim();
+    let entry = if trimmed.is_empty() {
+        state.label_vi().to_string()
+    } else {
+        format!("{}: {}", state.label_vi(), sanitize_detail(trimmed))
+    };
+    let mut out = Vec::with_capacity(3);
+    out.push(entry);
+    for old in prev_steps {
+        if out.len() >= 3 {
+            break;
+        }
+        if old != &out[0] {
+            out.push(old.clone());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
 pub fn derive_anti_progress_from_hook(
     event_name: &str,
     stdin_json: &str,
     prev: Option<&AntiProgressSnapshot>,
     now_ms: u64,
 ) -> AntiProgressSnapshot {
-    let conv_id = extract_json_string_field_top_level(stdin_json, "conversationId")
-        .unwrap_or_default();
     let transcript = extract_json_string_field_top_level(stdin_json, "transcriptPath");
     let artifact_dir = extract_json_string_field_top_level(stdin_json, "artifactDirectoryPath");
     let source = detect_source_from_paths(transcript.as_deref(), artifact_dir.as_deref());
+    derive_anti_progress_from_hook_with_source(event_name, stdin_json, source, prev, now_ms)
+}
+
+pub fn derive_anti_progress_from_hook_with_source(
+    event_name: &str,
+    stdin_json: &str,
+    source: AntiSource,
+    prev: Option<&AntiProgressSnapshot>,
+    now_ms: u64,
+) -> AntiProgressSnapshot {
+    let conv_id = extract_json_string_field_top_level(stdin_json, "conversationId")
+        .unwrap_or_default();
+    let transcript = extract_json_string_field_top_level(stdin_json, "transcriptPath");
     let hook_evt = extract_json_string_field_top_level(stdin_json, "hookEventName")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| event_name.to_string());
@@ -467,11 +1056,19 @@ pub fn derive_anti_progress_from_hook(
         _ => (AntiAgentState::Analyzing, String::new(), prev_had_error),
     };
 
+    let prev_steps = if hook_evt == "SessionStart" {
+        &[][..]
+    } else {
+        same_conv_prev.map_or(&[][..], |p| p.recent_steps.as_slice())
+    };
+    let recent_steps = append_recent_step(prev_steps, state, &detail);
+
     AntiProgressSnapshot {
         source,
         conversation_id: conv_id,
         state,
         detail,
+        recent_steps,
         had_error,
         updated_unix_ms: now_ms,
     }
@@ -481,13 +1078,66 @@ pub fn derive_anti_progress_from_hook(
 pub fn run_anti_hook_cli(event_name: &str) -> i32 {
     let mut stdin_buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin_buf);
+    let now = now_unix_ms();
     if let Some(path) = anti_progress_path() {
-        let prev = read_anti_progress(&path);
-        let snap = derive_anti_progress_from_hook(event_name, &stdin_buf, prev.as_ref(), now_unix_ms());
+        let transcript = extract_json_string_field_top_level(&stdin_buf, "transcriptPath");
+        let artifact_dir =
+            extract_json_string_field_top_level(&stdin_buf, "artifactDirectoryPath");
+        let source = detect_source_from_runtime(transcript.as_deref(), artifact_dir.as_deref());
+        let conv_id = extract_json_string_field_top_level(&stdin_buf, "conversationId")
+            .unwrap_or_default();
+        let session_path = anti_sessions_dir().map(|dir| {
+            let safe_conv: String = if conv_id.trim().is_empty() {
+                String::from("default")
+            } else {
+                conv_id
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .take(64)
+                    .collect()
+            };
+            dir.join(format!("{}-{safe_conv}.json", source.as_key()))
+        });
+        let prev = session_path
+            .as_ref()
+            .and_then(|p| read_anti_progress(p))
+            .or_else(|| read_anti_progress(&path));
+        let snap = derive_anti_progress_from_hook_with_source(
+            event_name,
+            &stdin_buf,
+            source,
+            prev.as_ref(),
+            now,
+        );
         let _ = write_anti_progress_atomic(&path, &snap);
+        if let Some(sp) = session_path {
+            let _ = write_anti_progress_atomic(&sp, &snap);
+            if let Some(dir) = sp.parent() {
+                prune_old_session_files(dir, now);
+            }
+        }
     }
     println!("{{}}");
     0
+}
+
+fn prune_old_session_files(dir: &Path, now_ms: u64) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata()
+            && let Ok(modified) = meta.modified()
+            && let Ok(dur) = modified.duration_since(UNIX_EPOCH)
+            && now_ms.saturating_sub(dur.as_millis() as u64) > SESSION_RETENTION_MS
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 pub fn global_hooks_json_path() -> Option<PathBuf> {
@@ -638,25 +1288,68 @@ impl Drop for HandleGuard {
     }
 }
 
+pub fn sort_and_prune_anti_slots(slots: &mut Vec<AntiProgressSnapshot>, now_ms: u64) {
+    slots.retain(|s| {
+        if s.is_stale(now_ms) {
+            return false;
+        }
+        if !s.state.is_running() && now_ms.saturating_sub(s.updated_unix_ms) > 25_000 {
+            return false;
+        }
+        true
+    });
+    slots.sort_by(|a, b| {
+        b.state
+            .is_running()
+            .cmp(&a.state.is_running())
+            .then_with(|| b.updated_unix_ms.cmp(&a.updated_unix_ms))
+    });
+    if slots.len() > 4 {
+        slots.truncate(4);
+    }
+}
+
+pub fn upsert_anti_slot(
+    slots: &mut Vec<AntiProgressSnapshot>,
+    incoming: AntiProgressSnapshot,
+    now_ms: u64,
+) {
+    let key = incoming.slot_key();
+    if let Some(pos) = slots.iter().position(|s| s.slot_key() == key) {
+        slots[pos] = incoming;
+    } else if incoming.conversation_id.is_empty()
+        && let Some(pos) = slots.iter().position(|s| s.source == incoming.source)
+    {
+        slots[pos] = incoming;
+    } else {
+        if incoming.state.is_running() {
+            slots.retain(|s| !(s.source == incoming.source && !s.state.is_running()));
+        }
+        slots.push(incoming);
+    }
+    sort_and_prune_anti_slots(slots, now_ms);
+}
+
 pub struct AntiWatcher {
     stop_event: SendHandle,
-    rx: Receiver<Option<AntiProgressSnapshot>>,
+    rx: Receiver<Vec<AntiProgressSnapshot>>,
     join: Option<JoinHandle<()>>,
 }
 
 impl AntiWatcher {
     pub fn start(hwnd: HWND) -> Self {
         let hwnd_raw = hwnd.0 as usize;
-        let (tx, rx) = mpsc::channel::<Option<AntiProgressSnapshot>>();
+        let (tx, rx) = mpsc::channel::<Vec<AntiProgressSnapshot>>();
         let stop_handle = unsafe { CreateEventW(None, true, false, None) }.unwrap_or_default();
         let worker_stop = SendHandle(stop_handle);
         let dir_path = anti_progress_dir();
         let file_path = anti_progress_path();
+        let brain_dir = ide_brain_dir();
 
         let join = thread::Builder::new()
             .name(String::from("anti-progress-watch"))
             .spawn(move || {
-                run_anti_watch_loop(hwnd_raw, worker_stop, dir_path, file_path, tx);
+                run_anti_watch_loop(hwnd_raw, worker_stop, dir_path, file_path, brain_dir, tx);
             })
             .ok();
 
@@ -667,7 +1360,7 @@ impl AntiWatcher {
         }
     }
 
-    pub fn drain_latest(&self) -> Option<Option<AntiProgressSnapshot>> {
+    pub fn drain_latest(&self) -> Option<Vec<AntiProgressSnapshot>> {
         let mut latest = None;
         while let Ok(item) = self.rx.try_recv() {
             latest = Some(item);
@@ -701,104 +1394,108 @@ fn post_anti_wake(hwnd_raw: usize) {
     }
 }
 
-fn run_anti_watch_loop(
-    hwnd_raw: usize,
-    stop_event: SendHandle,
-    dir_path: Option<PathBuf>,
-    file_path: Option<PathBuf>,
-    tx: mpsc::Sender<Option<AntiProgressSnapshot>>,
-) {
-    let (Some(dir), Some(file)) = (dir_path, file_path) else {
-        return;
-    };
-    let _ = fs::create_dir_all(&dir);
+struct DirWatch {
+    _dir_guard: HandleGuard,
+    _io_guard: HandleGuard,
+    dir_handle: HANDLE,
+    io_event: HANDLE,
+    buf: [u8; 8192],
+    overlapped: windows::Win32::System::IO::OVERLAPPED,
+    pending: bool,
+    subtree: bool,
+}
 
-    let mut last_sent = read_anti_progress(&file).filter(|s| !s.is_stale(now_unix_ms()));
-    if last_sent.is_some() {
-        let _ = tx.send(last_sent.clone());
-        post_anti_wake(hwnd_raw);
+impl DirWatch {
+    fn open(path: &Path, subtree: bool) -> Option<Self> {
+        let wide_dir = to_wide_null(&path.to_string_lossy());
+        let dir_raw = unsafe {
+            CreateFileW(
+                PCWSTR(wide_dir.as_ptr()),
+                FILE_LIST_DIRECTORY.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS
+                    | windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
+                None,
+            )
+        }
+        .ok()?;
+        if dir_raw == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let dir_guard = HandleGuard(dir_raw);
+        let io_event = unsafe { CreateEventW(None, true, false, None) }.unwrap_or_default();
+        if io_event.is_invalid() || io_event == HANDLE::default() {
+            return None;
+        }
+        let io_guard = HandleGuard(io_event);
+        Some(Self {
+            _dir_guard: dir_guard,
+            _io_guard: io_guard,
+            dir_handle: dir_raw,
+            io_event,
+            buf: [0_u8; 8192],
+            overlapped: windows::Win32::System::IO::OVERLAPPED {
+                hEvent: io_event,
+                ..Default::default()
+            },
+            pending: false,
+            subtree,
+        })
     }
 
-    let wide_dir = to_wide_null(&dir.to_string_lossy());
-    let dir_handle = unsafe {
-        CreateFileW(
-            PCWSTR(wide_dir.as_ptr()),
-            FILE_LIST_DIRECTORY.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
-            None,
-        )
-    };
-    let Ok(dir_raw) = dir_handle else {
-        return;
-    };
-    if dir_raw == INVALID_HANDLE_VALUE {
-        return;
-    }
-    let _dir_guard = HandleGuard(dir_raw);
-
-    let io_event = unsafe { CreateEventW(None, true, false, None) }.unwrap_or_default();
-    if io_event.is_invalid() || io_event == HANDLE::default() {
-        return;
-    }
-    let _io_guard = HandleGuard(io_event);
-
-    let mut buf = [0_u8; 4096];
-    let mut overlapped = windows::Win32::System::IO::OVERLAPPED {
-        hEvent: io_event,
-        ..Default::default()
-    };
-
-    loop {
+    fn arm(&mut self) -> bool {
+        if self.pending {
+            return true;
+        }
         unsafe {
-            let _ = ResetEvent(io_event);
+            let _ = ResetEvent(self.io_event);
         }
         let mut bytes_returned = 0_u32;
         let issued = unsafe {
             ReadDirectoryChangesW(
-                dir_raw,
-                buf.as_mut_ptr().cast(),
-                buf.len() as u32,
-                false,
+                self.dir_handle,
+                self.buf.as_mut_ptr().cast(),
+                self.buf.len() as u32,
+                self.subtree,
                 FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
                 Some(&mut bytes_returned),
-                Some(&mut overlapped),
+                Some(&mut self.overlapped),
                 None,
             )
         };
-        if issued.is_err() {
-            thread::sleep(Duration::from_millis(250));
-            continue;
+        if issued.is_ok() {
+            self.pending = true;
+            true
+        } else {
+            false
         }
+    }
 
-        let wait_handles = [stop_event.0, io_event];
-        let wait_res = unsafe { WaitForMultipleObjects(&wait_handles, false, u32::MAX) };
-        if wait_res == WAIT_OBJECT_0 {
-            break;
+    fn collect_changed_names(&mut self) -> Option<Vec<String>> {
+        if !self.pending {
+            return None;
         }
-
+        self.pending = false;
         let mut got = 0_u32;
         let ok = unsafe {
-            windows::Win32::System::IO::GetOverlappedResult(dir_raw, &overlapped, &mut got, false)
+            windows::Win32::System::IO::GetOverlappedResult(
+                self.dir_handle,
+                &self.overlapped,
+                &mut got,
+                false,
+            )
         };
         if ok.is_err() || got == 0 {
-            continue;
+            return None;
         }
-
-        if buffer_touches_progress_file(&buf[..got as usize]) {
-            let next = read_anti_progress(&file).filter(|s| !s.is_stale(now_unix_ms()));
-            if next != last_sent {
-                last_sent = next.clone();
-                let _ = tx.send(next);
-                post_anti_wake(hwnd_raw);
-            }
-        }
+        Some(extract_changed_filenames(&self.buf[..got as usize]))
     }
 }
 
-fn buffer_touches_progress_file(buf: &[u8]) -> bool {
+fn extract_changed_filenames(buf: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
     let mut offset = 0_usize;
     while offset + size_of::<FILE_NOTIFY_INFORMATION>() <= buf.len() {
         let info = unsafe { &*(buf.as_ptr().add(offset) as *const FILE_NOTIFY_INFORMATION) };
@@ -806,21 +1503,190 @@ fn buffer_touches_progress_file(buf: &[u8]) -> bool {
             info.Action,
             FILE_ACTION_ADDED | FILE_ACTION_MODIFIED | FILE_ACTION_RENAMED_NEW_NAME
         ) {
-            let name_bytes = info.FileNameLength as usize;
-            let name_u16_len = name_bytes / 2;
+            let name_u16_len = info.FileNameLength as usize / 2;
             let name_ptr = info.FileName.as_ptr();
             let slice = unsafe { std::slice::from_raw_parts(name_ptr, name_u16_len) };
-            let filename = String::from_utf16_lossy(slice);
-            if filename.eq_ignore_ascii_case(ANTI_PROGRESS_FILE_NAME) {
-                return true;
-            }
+            names.push(String::from_utf16_lossy(slice));
         }
         if info.NextEntryOffset == 0 {
             break;
         }
         offset = offset.saturating_add(info.NextEntryOffset as usize);
     }
-    false
+    names
+}
+
+fn collect_initial_slots(
+    file: &Path,
+    sessions_dir: Option<&Path>,
+    brain_dir: Option<&Path>,
+    now_ms: u64,
+) -> Vec<AntiProgressSnapshot> {
+    let mut slots = Vec::new();
+    if let Some(sess_dir) = sessions_dir
+        && let Ok(entries) = fs::read_dir(sess_dir)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Some(snap) = read_anti_progress(&path)
+                && !snap.is_stale(now_ms)
+            {
+                upsert_anti_slot(&mut slots, snap, now_ms);
+            }
+        }
+    }
+    if slots.is_empty()
+        && let Some(snap) = read_anti_progress(file)
+        && !snap.is_stale(now_ms)
+    {
+        upsert_anti_slot(&mut slots, snap, now_ms);
+    }
+    if let Some(brain) = brain_dir
+        && let Ok(entries) = fs::read_dir(brain)
+    {
+        let running = running_anti_exes();
+        let source = detect_ide_source_from_exes(&running);
+        if source != AntiSource::Antigravity {
+            for entry in entries.flatten() {
+                let conv_dir = entry.path();
+                if !conv_dir.is_dir() {
+                    continue;
+                }
+                let conv_name = conv_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if conv_name.is_empty() || conv_name.starts_with('.') {
+                    continue;
+                }
+                let transcript = conv_dir
+                    .join(".system_generated")
+                    .join("logs")
+                    .join(IDE_TRANSCRIPT_FILE_NAME);
+                if let Ok(meta) = fs::metadata(&transcript)
+                    && let Ok(modified) = meta.modified()
+                    && let Ok(dur) = modified.duration_since(UNIX_EPOCH)
+                    && now_ms.saturating_sub(dur.as_millis() as u64) <= IDE_STARTUP_RECENT_MS
+                    && let Some(snap) =
+                        parse_ide_transcript_tail(&transcript, &conv_name, source, now_ms)
+                {
+                    upsert_anti_slot(&mut slots, snap, now_ms);
+                }
+            }
+        }
+    }
+    sort_and_prune_anti_slots(&mut slots, now_ms);
+    slots
+}
+
+fn run_anti_watch_loop(
+    hwnd_raw: usize,
+    stop_event: SendHandle,
+    dir_path: Option<PathBuf>,
+    file_path: Option<PathBuf>,
+    brain_dir: Option<PathBuf>,
+    tx: mpsc::Sender<Vec<AntiProgressSnapshot>>,
+) {
+    let (Some(dir), Some(file)) = (dir_path, file_path) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let sess_dir = dir.join(ANTI_SESSIONS_DIR_NAME);
+    let _ = fs::create_dir_all(&sess_dir);
+
+    let init_now = now_unix_ms();
+    let mut slots = collect_initial_slots(&file, Some(&sess_dir), brain_dir.as_deref(), init_now);
+    let mut last_sent = slots.clone();
+    if !last_sent.is_empty() {
+        let _ = tx.send(last_sent.clone());
+        post_anti_wake(hwnd_raw);
+    }
+
+    let Some(mut local_watch) = DirWatch::open(&dir, true) else {
+        return;
+    };
+    let mut brain_watch = brain_dir
+        .as_deref()
+        .and_then(|b| if b.is_dir() { DirWatch::open(b, true) } else { None });
+
+    loop {
+        if !local_watch.arm() {
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        let brain_armed = brain_watch.as_mut().is_some_and(DirWatch::arm);
+
+        let mut wait_handles = Vec::with_capacity(3);
+        wait_handles.push(stop_event.0);
+        wait_handles.push(local_watch.io_event);
+        if brain_armed && let Some(bw) = &brain_watch {
+            wait_handles.push(bw.io_event);
+        }
+
+        let wait_res = unsafe { WaitForMultipleObjects(&wait_handles, false, u32::MAX) };
+        if wait_res == WAIT_OBJECT_0 {
+            break;
+        }
+
+        let now = now_unix_ms();
+        let mut dirty = false;
+
+        if wait_res.0 == WAIT_OBJECT_0.0 + 1
+            && let Some(names) = local_watch.collect_changed_names()
+        {
+            for rel in names {
+                let lower = rel.replace('/', "\\").to_ascii_lowercase();
+                if lower == ANTI_PROGRESS_FILE_NAME
+                    || lower.ends_with(&format!("\\{ANTI_PROGRESS_FILE_NAME}"))
+                {
+                    if let Some(snap) = read_anti_progress(&file).filter(|s| !s.is_stale(now)) {
+                        upsert_anti_slot(&mut slots, snap, now);
+                        dirty = true;
+                    }
+                } else if lower.contains(ANTI_SESSIONS_DIR_NAME) && lower.ends_with(".json") {
+                    let full = dir.join(&rel);
+                    if let Some(snap) = read_anti_progress(&full).filter(|s| !s.is_stale(now)) {
+                        upsert_anti_slot(&mut slots, snap, now);
+                        dirty = true;
+                    }
+                }
+            }
+        }
+
+        if brain_armed
+            && wait_res.0 == WAIT_OBJECT_0.0 + 2
+            && let Some(bw) = brain_watch.as_mut()
+            && let Some(names) = bw.collect_changed_names()
+            && let Some(brain_root) = brain_dir.as_deref()
+        {
+            let running = running_anti_exes();
+            let source = detect_ide_source_from_exes(&running);
+            for rel in names {
+                let norm = rel.replace('\\', "/");
+                if !norm.to_ascii_lowercase().ends_with(IDE_TRANSCRIPT_FILE_NAME) {
+                    continue;
+                }
+                let full = brain_root.join(&rel);
+                let conv_id = extract_conv_id_from_brain_path(brain_root, &full);
+                if let Some(snap) = parse_ide_transcript_tail(&full, &conv_id, source, now)
+                    && !snap.is_stale(now)
+                {
+                    upsert_anti_slot(&mut slots, snap, now);
+                    dirty = true;
+                }
+            }
+        }
+
+        if dirty {
+            sort_and_prune_anti_slots(&mut slots, now);
+            if slots != last_sent {
+                last_sent = slots.clone();
+                let _ = tx.send(last_sent.clone());
+                post_anti_wake(hwnd_raw);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -921,12 +1787,21 @@ mod tests {
             conversation_id: String::from("conv-123"),
             state: AntiAgentState::Building,
             detail: String::from("cargo build --release"),
+            recent_steps: vec![
+                String::from("Đang build: cargo build --release"),
+                String::from("Đang code: Sửa anti.rs"),
+            ],
             had_error: false,
             updated_unix_ms: 1_795_836_400_000,
         };
         let raw = snap.to_json();
         let parsed = AntiProgressSnapshot::from_json(&raw).expect("parse anti progress json");
         assert_eq!(parsed, snap);
+
+        let legacy = r#"{"source":"anti-ide","conversation_id":"c0","state":"coding","detail":"Sửa main.rs","had_error":false,"updated_unix_ms":10}"#;
+        let parsed_legacy = AntiProgressSnapshot::from_json(legacy).expect("legacy json");
+        assert_eq!(parsed_legacy.source, AntiSource::AntiIde);
+        assert!(parsed_legacy.recent_steps.is_empty());
 
         let existing = r#"{
   "my-custom-lint": {
@@ -941,6 +1816,74 @@ mod tests {
         let removed = remove_anti_hook_from_json(&merged).expect("remove hooks");
         assert!(removed.contains("\"my-custom-lint\""));
         assert!(!removed.contains("\"win-dynamic-island-status\""));
+    }
+
+    #[test]
+    fn classifies_anti_sources_independent_of_install_drive_and_summarizes_commands() {
+        let empty_env = AntiEnvHints {
+            ls_version: None,
+            jetski_app_data_dir: None,
+            agentapi_exe: None,
+            vscode_pid_exe: None,
+        };
+        let shared_path = Some(r"C:\Users\Bob\.gemini\antigravity\brain\123\transcript.jsonl");
+
+        // Cài Anti IDE ở bất kỳ ổ/thư mục nào (ví dụ D:\Tools\Custom\Antigravity IDE.exe) nhưng dùng chung .gemini/antigravity/
+        let ide_src = classify_anti_source_inputs(
+            &empty_env,
+            &[String::from("cmd.exe"), String::from("Antigravity IDE.exe")],
+            &[],
+            shared_path,
+            None,
+        );
+        assert_eq!(ide_src, AntiSource::AntiIde);
+
+        // Anti App chạy từ Antigravity.exe
+        let app_src = classify_anti_source_inputs(
+            &empty_env,
+            &[String::from("Antigravity.exe")],
+            &[],
+            shared_path,
+            None,
+        );
+        assert_eq!(app_src, AntiSource::AntiApp);
+
+        // agy CLI qua env phiên dù không có đường dẫn antigravity-cli/
+        let cli_env = AntiEnvHints {
+            ls_version: Some("cli-1.5.18"),
+            jetski_app_data_dir: Some("antigravity-cli"),
+            agentapi_exe: Some(r"E:\Portable\agy.exe"),
+            vscode_pid_exe: None,
+        };
+        assert_eq!(
+            classify_anti_source_inputs(&cli_env, &[], &[], shared_path, None),
+            AntiSource::AgyCli
+        );
+
+        // Cây cha bị ngắt khi dùng chung .gemini/antigravity/, chỉ có Antigravity IDE.exe đang chạy
+        assert_eq!(
+            classify_anti_source_inputs(
+                &empty_env,
+                &[],
+                &[String::from("Antigravity IDE.exe")],
+                shared_path,
+                None,
+            ),
+            AntiSource::AntiIde
+        );
+
+        // Rút gọn lệnh PowerShell thô & ưu tiên toolSummary
+        assert_eq!(
+            summarize_command_hint(r#"$winSrc = "C:\Users\ASUS\.cargo\registry""#),
+            "Truy vấn PowerShell"
+        );
+        let (st, hint) = classify_tool_call(
+            "run_command",
+            r#"{"CommandLine":"$winSrc = 'C:\\x'","toolSummary":"Inspect device APIs"}"#,
+            false,
+        );
+        assert_eq!(st, AntiAgentState::Analyzing);
+        assert_eq!(hint, "Inspect device APIs");
     }
 
     #[test]
@@ -969,5 +1912,84 @@ mod tests {
 
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn parses_ide_transcript_and_ranks_dual_anti_slots() {
+        let dir = std::env::temp_dir().join(format!("wdi_ide_transcript_{}", std::process::id()));
+        let brain = dir.join("brain");
+        let log_dir = brain.join("conv-ide-1").join(".system_generated").join("logs");
+        let _ = fs::create_dir_all(&log_dir);
+        let path = log_dir.join("transcript.jsonl");
+
+        assert_eq!(
+            extract_conv_id_from_brain_path(&brain, &path),
+            "conv-ide-1"
+        );
+        assert_eq!(
+            detect_ide_source_from_exes(&[String::from("Antigravity IDE.exe")]),
+            AntiSource::AntiIde
+        );
+
+        let running_content = concat!(
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE"}"#,
+            "\n",
+            r#"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","tool_calls":[{"name":"write_file","args":{"Path":"src/anti.rs"}}]}"#,
+            "\n"
+        );
+        fs::write(&path, running_content.as_bytes()).expect("write ide running transcript");
+        let running_snap = parse_ide_transcript_tail(&path, "conv-ide-1", AntiSource::AntiIde, 5000)
+            .expect("parse running ide transcript");
+        assert_eq!(running_snap.source, AntiSource::AntiIde);
+        assert_eq!(running_snap.state, AntiAgentState::Coding);
+        assert_eq!(running_snap.detail, "Sửa anti.rs");
+
+        let done_content = format!(
+            "{running_content}{}\n",
+            r#"{"step_index":2,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","content":"Đã xong mọi bước"}"#
+        );
+        fs::write(&path, done_content.as_bytes()).expect("write ide done transcript");
+        let done_snap = parse_ide_transcript_tail(&path, "conv-ide-1", AntiSource::AntiIde, 6000)
+            .expect("parse done ide transcript");
+        assert_eq!(done_snap.state, AntiAgentState::Done);
+
+        let mut slots = Vec::new();
+        let cli_done = AntiProgressSnapshot {
+            source: AntiSource::AgyCli,
+            conversation_id: String::from("cli-1"),
+            state: AntiAgentState::Done,
+            detail: String::from("Hoàn tất"),
+            recent_steps: Vec::new(),
+            had_error: false,
+            updated_unix_ms: 9000,
+        };
+        let mut ide_coding = running_snap;
+        ide_coding.updated_unix_ms = 8000;
+        upsert_anti_slot(&mut slots, cli_done, 9100);
+        upsert_anti_slot(&mut slots, ide_coding, 9100);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].source, AntiSource::AntiIde);
+        assert_eq!(slots[1].source, AntiSource::AgyCli);
+
+        let entries = vec![
+            (12024_u32, 1000_u32, String::from("explorer.exe")),
+            (3616_u32, 12024_u32, String::from("WindowsTerminal.exe")),
+            (8964_u32, 3616_u32, String::from("powershell.exe")),
+            (3196_u32, 8964_u32, String::from("agy.exe")),
+            (21204_u32, 12024_u32, String::from("Antigravity IDE.exe")),
+            (3444_u32, 21204_u32, String::from("Antigravity IDE.exe")),
+            (8008_u32, 3444_u32, String::from("agy.exe")),
+        ];
+        let cli_pids = collect_ancestor_pids_from_entries(&entries, AntiSource::AgyCli);
+        assert!(cli_pids.contains(&3196));
+        assert!(cli_pids.contains(&8964));
+        assert!(cli_pids.contains(&3616));
+        assert!(!cli_pids.contains(&8008));
+        assert!(!cli_pids.contains(&3444));
+        assert!(!cli_pids.contains(&12024));
+        assert!(!cli_pids.contains(&21204));
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

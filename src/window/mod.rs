@@ -42,14 +42,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::PCWSTR;
 
 use crate::anti::{
-    AntiProgressSnapshot, AntiWatcher, WM_APP_ANTI_UPDATE, are_anti_hooks_installed,
+    AntiAgentState, AntiProgressSnapshot, AntiWatcher, WM_APP_ANTI_UPDATE, are_anti_hooks_installed,
     install_anti_hooks, now_unix_ms, uninstall_anti_hooks,
 };
 use crate::config::{load_config, save_config, set_autostart_enabled};
 use crate::hud::{
-    AudioCommand, AudioMonitor, AudioOutputDevice, GUID_ACDC_POWER_SOURCE, HUD_EXPIRE_DELAY_MS,
-    HudWorkerEvent, PowerStateTracker, VolumeSnapshot, WM_APP_HUD_EVENT, WheelVolumeAccumulator,
-    apply_volume_step,
+    AudioCommand, AudioMonitor, AudioOutputDevice, DeviceHudEvent, GUID_ACDC_POWER_SOURCE,
+    HUD_EXPIRE_DELAY_MS, HudWorkerEvent, PowerStateTracker, VolumeSnapshot, WM_APP_HUD_EVENT,
+    WheelVolumeAccumulator, apply_volume_step,
 };
 use crate::media::{MediaCommand, MediaWorker, WM_APP_MEDIA_UPDATE};
 use crate::renderer::{IslandRenderer, RenderFrameInput, ShelfRenderInput};
@@ -58,14 +58,14 @@ use crate::shelf::{
     load_shelf_state, save_shelf_state, start_shelf_drag_out,
 };
 use crate::state::{
-    AppConfig, HudContent, IslandAnimator, IslandMode, IslandNoticeView,
-    MAX_AUDIO_DEVICES_VISIBLE, MAX_SHELF_VISIBLE_ROWS, MAX_SURFACE_HEIGHT_DIP,
+    AppConfig, AudioOutputKind, DeviceHudCategory, HudContent, IslandAnimator, IslandMode,
+    IslandNoticeView, MAX_AUDIO_DEVICES_VISIBLE, MAX_SHELF_VISIBLE_ROWS, MAX_SURFACE_HEIGHT_DIP,
     MAX_SURFACE_WIDTH_DIP, MediaDisplayState, NoticeKind, PillRectDip, PixelRect, UiAction,
     UiHitbox, UiRectDip, compute_pill_region_px, compute_surface_size_px,
     compute_window_origin_px, current_windows_filetime_ticks, effective_mode,
-    fill_audio_devices_hitboxes, fill_interactive_hitboxes, fill_notice_hitboxes,
-    fill_shelf_hitboxes, fill_volume_hud_hitboxes, pill_contains_dip, shelf_contains_dip,
-    shelf_pill_rect, should_close_subview_on_header_click,
+    fill_audio_devices_hitboxes, fill_compact_media_hitboxes, fill_interactive_hitboxes,
+    fill_notice_hitboxes, fill_shelf_hitboxes, fill_volume_hud_hitboxes, left_anti_pill_rect,
+    pill_contains_dip, shelf_contains_dip, shelf_pill_rect, should_close_subview_on_header_click,
     should_collapse_expanded_on_blank_click, should_collapse_shelf_on_header_click,
     target_dimensions_for_state, target_top_for_mode, timeline_ratio_for_x,
     timeline_seek_hit_bounds, volume_seek_hit_bounds,
@@ -73,9 +73,9 @@ use crate::state::{
 use crate::tray::{
     IDM_AUDIO_DEVICE_BASE, IDM_AUDIO_DEVICE_MAX, IDM_CHECK_UPDATE, IDM_EXIT, IDM_MONITOR_BASE,
     IDM_MONITOR_MAX, IDM_OPEN_SETTINGS, IDM_TOGGLE_AUTO_HIDE, IDM_TOGGLE_AUTOSTART,
-    IDM_TOGGLE_EXPANDED, IDM_TOGGLE_FULLSCREEN, IDM_TOGGLE_HUD_POWER, IDM_TOGGLE_HUD_VOLUME,
-    IDM_TOGGLE_HUD_WHEEL, IDM_TOGGLE_NOTCH_COLLAPSE, IDM_TOGGLE_VISIBLE, IDM_TOGGLE_VISUALIZER,
-    TrayIcon, WM_APP_TRAY, load_app_icon_for_window, to_wide_null,
+    IDM_TOGGLE_EXPANDED, IDM_TOGGLE_FULLSCREEN, IDM_TOGGLE_HUD_DEVICE, IDM_TOGGLE_HUD_POWER,
+    IDM_TOGGLE_HUD_VOLUME, IDM_TOGGLE_HUD_WHEEL, IDM_TOGGLE_NOTCH_COLLAPSE, IDM_TOGGLE_VISIBLE,
+    IDM_TOGGLE_VISUALIZER, TrayIcon, WM_APP_TRAY, load_app_icon_for_window, to_wide_null,
 };
 use crate::updater::{
     APP_VERSION, UpdateReleaseInfo, UpdaterEvent, WM_APP_UPDATE_EVENT, check_for_updates_async,
@@ -84,7 +84,7 @@ use crate::updater::{
 use crate::vsync::{TickerMode, VSyncTicker, WM_APP_VSYNC_TICK};
 use crate::watcher::{
     DisplayMonitor, ForegroundHookGuard, WM_APP_FOREGROUND_CHANGED, enumerate_monitors,
-    is_foreground_anti_app, is_foreground_fullscreen_on_monitor, select_monitor_or_default,
+    focus_anti_window, is_foreground_fullscreen_on_monitor, select_monitor_or_default,
 };
 
 
@@ -104,6 +104,8 @@ const AUTO_COLLAPSE_DELAY_MS: u32 = 5_000;
 const COMPACT_TO_NOTCH_DELAY_MS: u32 = 4_000;
 const NOTICE_AUTO_DISMISS_MS: u32 = 4_000;
 const ANTI_TERMINAL_DISPLAY_MS: u32 = 4_000;
+const ANTI_ERROR_DISPLAY_MS: u32 = 10_000;
+const DEVICE_HUD_EXPIRE_DELAY_MS: u32 = 2_600;
 const SHELF_DRAG_LEAVE_DELAY_MS: u32 = 180;
 const TRAY_RETRY_INTERVAL_MS: u32 = 1_500;
 const MAX_TRAY_RETRY_ATTEMPTS: u8 = 20;
@@ -191,6 +193,9 @@ struct WindowController {
     audio_devices: Vec<AudioOutputDevice>,
     audio_device_scroll: usize,
     current_audio_device_name: Option<String>,
+    current_audio_device_kind: AudioOutputKind,
+    hud_device_name: Option<String>,
+    hud_device_container_key: Option<String>,
     volume_snapshot: VolumeSnapshot,
     power_tracker: PowerStateTracker,
     power_notify_handle: Option<HPOWERNOTIFY>,
@@ -201,6 +206,7 @@ struct WindowController {
     tray_retry_attempts: u8,
     last_region: Option<(PixelRect, i32)>,
     last_shelf_region: Option<(PixelRect, i32)>,
+    last_left_anti_region: Option<(PixelRect, i32)>,
     last_bridge_region: Option<PixelRect>,
     last_window_rect: Option<(i32, i32, i32, i32)>,
     hitbox_scratch: Vec<UiHitbox>,
@@ -213,9 +219,9 @@ struct WindowController {
     active_notice: Option<ActiveNotice>,
     update_in_progress: bool,
     anti_watcher: Option<AntiWatcher>,
-    anti_snapshot: Option<AntiProgressSnapshot>,
-    anti_banner_active: bool,
-    foreground_is_anti: bool,
+    anti_slots: Vec<AntiProgressSnapshot>,
+    dismissed_anti_keys: Vec<(String, u64)>,
+    anti_expanded_key: Option<String>,
     anti_hooks_installed: bool,
     anti_spinner_phase: f32,
     shelf: ShelfState,
@@ -313,7 +319,6 @@ impl IslandWindow {
         let anti_watcher = AntiWatcher::start(hwnd);
         let fg_hook = ForegroundHookGuard::install(hwnd);
         let anti_hooks_installed = are_anti_hooks_installed();
-        let foreground_is_anti = config.anti_monitor_enabled && is_foreground_anti_app(hwnd);
         let mut shelf = load_shelf_state();
         shelf.prune_missing_files();
         let (shelf_drop_tx, shelf_drop_rx) = std::sync::mpsc::channel();
@@ -380,6 +385,9 @@ impl IslandWindow {
             audio_devices: Vec::new(),
             audio_device_scroll: 0,
             current_audio_device_name: None,
+            current_audio_device_kind: AudioOutputKind::Speaker,
+            hud_device_name: None,
+            hud_device_container_key: None,
             volume_snapshot: VolumeSnapshot::default(),
             power_tracker,
             power_notify_handle,
@@ -390,6 +398,7 @@ impl IslandWindow {
             tray_retry_attempts: 0,
             last_region: None,
             last_shelf_region: None,
+            last_left_anti_region: None,
             last_bridge_region: None,
             last_window_rect: None,
             hitbox_scratch: Vec::with_capacity(8),
@@ -402,9 +411,9 @@ impl IslandWindow {
             active_notice: None,
             update_in_progress: false,
             anti_watcher: Some(anti_watcher),
-            anti_snapshot: None,
-            anti_banner_active: false,
-            foreground_is_anti,
+            anti_slots: Vec::new(),
+            dismissed_anti_keys: Vec::new(),
+            anti_expanded_key: None,
             anti_hooks_installed,
             anti_spinner_phase: 0.0,
             shelf,
@@ -651,11 +660,8 @@ unsafe extern "system" fn window_proc(
             LRESULT(1)
         }
         WM_APP_FOREGROUND_CHANGED => {
-            let release_capture = get_controller_mut(hwnd).is_some_and(|ctrl| {
-                let rel = ctrl.refresh_fullscreen_state();
-                ctrl.refresh_anti_foreground_state();
-                rel
-            });
+            let release_capture =
+                get_controller_mut(hwnd).is_some_and(WindowController::refresh_fullscreen_state);
             if release_capture {
                 unsafe {
                     let _ = ReleaseCapture();
@@ -687,7 +693,6 @@ unsafe extern "system" fn window_proc(
                     TIMER_NOTICE_EXPIRE_ID => ctrl.dismiss_notice(),
                     TIMER_FULLSCREEN_CHECK_ID => {
                         release_capture = ctrl.refresh_fullscreen_state();
-                        ctrl.refresh_anti_foreground_state();
                         if !release_capture {
                             ctrl.sync_pointer_presence();
                         }
@@ -838,6 +843,7 @@ unsafe extern "system" fn window_proc(
                         let expanded = matches!(
                             ctrl.requested_mode,
                             IslandMode::Expanded
+                                | IslandMode::AntiExpanded
                                 | IslandMode::Settings
                                 | IslandMode::AudioDevices
                                 | IslandMode::Notice
@@ -869,10 +875,10 @@ unsafe extern "system" fn window_proc(
                         ctrl.dismiss_notice_state_quiet();
                         ctrl.cancel_compact_to_notch();
                         ctrl.cancel_auto_collapse();
-                        ctrl.settings_return_mode = if ctrl.requested_mode == IslandMode::Expanded {
-                            IslandMode::Expanded
-                        } else {
-                            ctrl.collapsed_rest_mode()
+                        ctrl.settings_return_mode = match ctrl.requested_mode {
+                            IslandMode::Expanded => IslandMode::Expanded,
+                            IslandMode::AntiExpanded => IslandMode::AntiExpanded,
+                            _ => ctrl.collapsed_rest_mode(),
                         };
                         ctrl.config.visible = true;
                         ctrl.anti_hooks_installed = are_anti_hooks_installed();
@@ -887,6 +893,7 @@ unsafe extern "system" fn window_proc(
                         ctrl.config.visible = true;
                         ctrl.requested_mode = match ctrl.requested_mode {
                             IslandMode::Expanded
+                            | IslandMode::AntiExpanded
                             | IslandMode::Settings
                             | IslandMode::AudioDevices
                             | IslandMode::Notice => {
@@ -921,6 +928,7 @@ unsafe extern "system" fn window_proc(
                     IDM_TOGGLE_HUD_VOLUME => ctrl.execute_ui_action(UiAction::ToggleHudVolume),
                     IDM_TOGGLE_HUD_WHEEL => ctrl.execute_ui_action(UiAction::ToggleHudWheel),
                     IDM_TOGGLE_HUD_POWER => ctrl.execute_ui_action(UiAction::ToggleHudPower),
+                    IDM_TOGGLE_HUD_DEVICE => ctrl.execute_ui_action(UiAction::ToggleHudDevice),
                     IDM_TOGGLE_AUTOSTART => ctrl.execute_ui_action(UiAction::ToggleAutostart),
                     IDM_CHECK_UPDATE => ctrl.handle_check_update_command(),
                     IDM_EXIT => ctrl.shutdown_and_destroy(),

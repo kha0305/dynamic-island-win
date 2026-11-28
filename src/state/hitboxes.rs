@@ -5,11 +5,72 @@ pub fn fill_interactive_hitboxes(pill: PillRectDip, mode: IslandMode, out: &mut 
     out.clear();
     match mode {
         IslandMode::Expanded => fill_expanded_hitboxes(pill, out),
+        IslandMode::AntiExpanded => fill_anti_expanded_hitboxes(pill, out),
         IslandMode::Settings => fill_settings_hitboxes(pill, out),
         IslandMode::AudioDevices => fill_audio_devices_hitboxes(pill, 0, out),
         IslandMode::Notice => fill_notice_hitboxes(pill, false, out),
         _ => {}
     }
+}
+
+pub fn fill_compact_media_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
+    out.clear();
+    let audio_btn = UiRectDip {
+        left: pill.left + pill.width - 58.0,
+        top: pill.top + 6.0,
+        right: pill.left + pill.width - 34.0,
+        bottom: pill.top + pill.height - 6.0,
+    };
+    out.push(UiHitbox {
+        rect: audio_btn,
+        action: UiAction::OpenAudioDevices,
+    });
+}
+
+pub fn fill_anti_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
+    out.clear();
+    let pad_x = 16.0;
+    let gap = 8.0;
+    let inner_left = pill.left + pad_x;
+    let inner_right = pill.left + pill.width - pad_x;
+    let btn_bottom = pill.top + pill.height - 12.0;
+    let btn_top = btn_bottom - 32.0;
+
+    let settings_w = 94.0;
+    let dismiss_w = 88.0;
+    let settings_left = inner_right - settings_w;
+    let dismiss_left = settings_left - gap - dismiss_w;
+    let focus_right = dismiss_left - gap;
+
+    out.extend_from_slice(&[
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left,
+                top: btn_top,
+                right: focus_right,
+                bottom: btn_bottom,
+            },
+            action: UiAction::FocusAntiWindow,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: dismiss_left,
+                top: btn_top,
+                right: dismiss_left + dismiss_w,
+                bottom: btn_bottom,
+            },
+            action: UiAction::DismissAnti,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: settings_left,
+                top: btn_top,
+                right: inner_right,
+                bottom: btn_bottom,
+            },
+            action: UiAction::OpenSettings,
+        },
+    ]);
 }
 
 pub fn fill_notice_hitboxes(pill: PillRectDip, has_secondary: bool, out: &mut Vec<UiHitbox>) {
@@ -265,7 +326,7 @@ pub fn should_collapse_shelf_on_header_click(
 }
 
 pub fn settings_section_tops(pill: PillRectDip) -> [f32; 3] {
-    [pill.top + 39.0, pill.top + 132.0, pill.top + 225.0]
+    [pill.top + 39.0, pill.top + 132.0, pill.top + 263.0]
 }
 
 fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
@@ -287,11 +348,12 @@ fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
     let row2_top = row1_top + row_h + gap;
     let row3_top = pill.top + 148.0;
     let row4_top = row3_top + row_h + gap;
-    let row5_top = pill.top + 241.0;
-    let row6_top = row5_top + row_h + gap;
+    let row5_top = row4_top + row_h + gap;
+    let row6_top = pill.top + 279.0;
     let row7_top = row6_top + row_h + gap;
+    let row8_top = row7_top + row_h + gap;
     let bottom_h = 32.0;
-    let footer_top = row7_top + row_h + 7.0;
+    let footer_top = row8_top + row_h + 7.0;
 
     out.extend_from_slice(&[
         UiHitbox {
@@ -368,50 +430,59 @@ fn fill_settings_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
                 right: inner_right,
                 bottom: row4_top + row_h,
             },
-            action: UiAction::OpenAudioDevices,
+            action: UiAction::ToggleHudDevice,
         },
         UiHitbox {
             rect: UiRectDip {
                 left: inner_left,
                 top: row5_top,
-                right: inner_left + col_w,
+                right: inner_right,
                 bottom: row5_top + row_h,
+            },
+            action: UiAction::OpenAudioDevices,
+        },
+        UiHitbox {
+            rect: UiRectDip {
+                left: inner_left,
+                top: row6_top,
+                right: inner_left + col_w,
+                bottom: row6_top + row_h,
             },
             action: UiAction::ToggleAutostart,
         },
         UiHitbox {
             rect: UiRectDip {
                 left: inner_left + col_w + gap,
-                top: row5_top,
+                top: row6_top,
                 right: inner_right,
-                bottom: row5_top + row_h,
+                bottom: row6_top + row_h,
             },
             action: UiAction::CheckUpdate,
         },
         UiHitbox {
             rect: UiRectDip {
                 left: inner_left,
-                top: row6_top,
+                top: row7_top,
                 right: inner_right,
-                bottom: row6_top + row_h,
+                bottom: row7_top + row_h,
             },
             action: UiAction::CycleMonitor,
         },
         UiHitbox {
             rect: UiRectDip {
                 left: inner_left,
-                top: row7_top,
+                top: row8_top,
                 right: inner_left + col_w,
-                bottom: row7_top + row_h,
+                bottom: row8_top + row_h,
             },
             action: UiAction::ToggleAntiMonitor,
         },
         UiHitbox {
             rect: UiRectDip {
                 left: inner_left + col_w + gap,
-                top: row7_top,
+                top: row8_top,
                 right: inner_right,
-                bottom: row7_top + row_h,
+                bottom: row8_top + row_h,
             },
             action: UiAction::ToggleAntiHooks,
         },
@@ -496,10 +567,32 @@ pub fn shelf_pill_rect(
 }
 
 pub fn shelf_contains_dip(rect: PillRectDip, x_dip: f32, y_dip: f32, margin: f32) -> bool {
-    x_dip >= rect.left - margin
-        && x_dip <= rect.left + rect.width + margin
-        && y_dip >= rect.top - margin
-        && y_dip <= rect.top + rect.height + margin
+    pill_contains_dip(rect, x_dip, y_dip, margin)
+}
+
+pub fn left_anti_pill_rect(pill: PillRectDip, mode: IslandMode) -> Option<PillRectDip> {
+    if !matches!(
+        mode,
+        IslandMode::Slim | IslandMode::Compact | IslandMode::Expanded | IslandMode::AntiExpanded
+    ) {
+        return None;
+    }
+    let width = 232.0;
+    let height = 40.0;
+    let gap = 10.0;
+    let left = (pill.left - gap - width).max(6.0);
+    let top = if mode == IslandMode::Slim {
+        2.0
+    } else {
+        (pill.top + (pill.height.min(40.0) - height) * 0.5).max(2.0)
+    };
+    Some(PillRectDip {
+        left,
+        top,
+        width,
+        height,
+        corner_radius: height * 0.5,
+    })
 }
 
 pub fn fill_shelf_hitboxes(

@@ -35,6 +35,7 @@ pub const IDM_TOGGLE_NOTCH_COLLAPSE: usize = 1009;
 pub const IDM_TOGGLE_HUD_VOLUME: usize = 1010;
 pub const IDM_TOGGLE_HUD_WHEEL: usize = 1011;
 pub const IDM_TOGGLE_HUD_POWER: usize = 1012;
+pub const IDM_TOGGLE_HUD_DEVICE: usize = 1013;
 pub const IDM_EXIT: usize = 1099;
 pub const IDM_MONITOR_BASE: usize = 2000;
 pub const IDM_MONITOR_MAX: usize = 2031;
@@ -232,6 +233,12 @@ impl TrayIcon {
                 IDM_TOGGLE_HUD_POWER,
                 "HUD Pin / Sạc",
                 config.hud_power_enabled,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_HUD_DEVICE,
+                "HUD Thiết bị",
+                config.hud_device_enabled,
             );
 
             if let Ok(sub_monitors) = unsafe { CreatePopupMenu() } {

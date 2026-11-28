@@ -58,12 +58,14 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::hud::{AudioOutputDevice, VolumeSnapshot};
 use crate::media::{ArtworkUpdate, DecodedArtwork};
 use crate::state::{
-    AppConfig, HudContent, IslandMode, IslandNoticeView, MAX_AUDIO_DEVICES_VISIBLE,
-    MAX_SHELF_VISIBLE_ROWS, MediaDisplayState, NoticeKind, PillRectDip, UiAction, UiHitbox,
-    UiRectDip, audio_devices_height_for_count, compute_surface_size_px,
-    current_windows_filetime_ticks, fill_audio_devices_hitboxes, fill_interactive_hitboxes,
-    fill_notice_hitboxes, fill_volume_hud_hitboxes, format_duration_ticks, settings_section_tops,
-    shelf_pill_rect, target_dimensions_for_mode, target_dimensions_for_state,
+    AppConfig, AudioOutputKind, DeviceHudCategory, HudContent, IslandMode, IslandNoticeView,
+    MAX_AUDIO_DEVICES_VISIBLE, MAX_SHELF_VISIBLE_ROWS, MediaDisplayState, NoticeKind,
+    PillRectDip, UiAction, UiHitbox, UiRectDip, audio_devices_height_for_count,
+    compute_surface_size_px, current_windows_filetime_ticks, fill_anti_expanded_hitboxes,
+    fill_audio_devices_hitboxes, fill_compact_media_hitboxes, fill_interactive_hitboxes,
+    fill_notice_hitboxes, fill_volume_hud_hitboxes, format_duration_ticks, left_anti_pill_rect,
+    settings_section_tops, shelf_pill_rect, target_dimensions_for_mode,
+    target_dimensions_for_state,
 };
 use crate::tray::to_wide_null;
 use crate::updater::APP_VERSION;
@@ -94,9 +96,12 @@ pub struct RenderFrameInput<'a> {
     pub audio_device_scroll: usize,
     pub volume_snapshot: VolumeSnapshot,
     pub current_audio_device_name: Option<&'a str>,
+    pub current_audio_device_kind: AudioOutputKind,
+    pub hud_device_name: Option<&'a str>,
     pub notice: Option<IslandNoticeView<'a>>,
     pub available_update_tag: Option<&'a str>,
     pub anti: Option<&'a crate::anti::AntiProgressSnapshot>,
+    pub anti_secondary: Option<&'a crate::anti::AntiProgressSnapshot>,
     pub anti_hooks_installed: bool,
     pub anti_spinner_phase: f32,
     pub shelf: ShelfRenderInput<'a>,
@@ -411,8 +416,18 @@ impl IslandRenderer {
         } else {
             None
         };
-        self.comp_host
-            .update_backdrops(input.pill, shelf_rect, input.pill_opacity, scale);
+        let left_anti_rect = if input.anti_secondary.is_some() && input.pill_opacity > 0.02 {
+            left_anti_pill_rect(input.pill, input.mode)
+        } else {
+            None
+        };
+        self.comp_host.update_backdrops(
+            input.pill,
+            shelf_rect,
+            left_anti_rect,
+            input.pill_opacity,
+            scale,
+        );
 
         let clear = D2D1_COLOR_F {
             r: 0.0,
@@ -443,7 +458,7 @@ impl IslandRenderer {
                     draw_ctx.SetTransform(&base_transform);
                     draw_ctx.Clear(Some(&clear));
                 }
-                self.draw_scene(canvas, input, shelf_rect, has_backdrop);
+                self.draw_scene(canvas, input, shelf_rect, left_anti_rect, has_backdrop);
                 unsafe {
                     draw_ctx.SetTransform(&Matrix3x2::identity());
                 }
@@ -478,7 +493,7 @@ impl IslandRenderer {
                     d2d_ctx.SetTransform(&base_transform);
                     d2d_ctx.Clear(Some(&clear));
                 }
-                self.draw_scene(canvas, input, shelf_rect, false);
+                self.draw_scene(canvas, input, shelf_rect, left_anti_rect, false);
                 unsafe {
                     d2d_ctx.SetTransform(&Matrix3x2::identity());
                     d2d_ctx.EndDraw(None, None)?;
@@ -494,18 +509,31 @@ impl IslandRenderer {
         canvas: DrawCanvas<'_>,
         input: &RenderFrameInput<'_>,
         shelf_rect: Option<PillRectDip>,
+        left_anti_rect: Option<PillRectDip>,
         has_backdrop: bool,
     ) {
         if input.pill_opacity > 0.02 && input.pill.height >= 2.0 {
             let show_media_aura = !matches!(
                 input.mode,
                 IslandMode::Slim
+                    | IslandMode::AntiExpanded
                     | IslandMode::Settings
                     | IslandMode::AudioDevices
                     | IslandMode::Notice
             ) && input.active_hud.is_none()
                 && input.anti.is_none()
                 && input.media.has_session;
+            let anti_emphasis = if input.active_hud.is_none()
+                && matches!(input.mode, IslandMode::Compact | IslandMode::AntiExpanded)
+            {
+                input.anti.and_then(|s| match s.state {
+                    crate::anti::AntiAgentState::WaitingApproval => Some(self.brushes.power_warn.clone()),
+                    crate::anti::AntiAgentState::Error => Some(self.brushes.danger_border.clone()),
+                    _ => None,
+                })
+            } else {
+                None
+            };
             unsafe {
                 self.draw_pill_shell(
                     canvas,
@@ -513,6 +541,7 @@ impl IslandRenderer {
                     input.pill_opacity,
                     has_backdrop,
                     show_media_aura,
+                    anti_emphasis.as_ref(),
                 );
             }
             let (_, target_h, _, _) =
@@ -523,6 +552,19 @@ impl IslandRenderer {
                 unsafe {
                     self.draw_clipped_contents(canvas, input, effective_alpha);
                 }
+            }
+        }
+        if let (Some(l_rect), Some(sec_anti)) = (left_anti_rect, input.anti_secondary) {
+            unsafe {
+                self.draw_left_anti_surface(
+                    canvas,
+                    l_rect,
+                    sec_anti,
+                    input.anti_spinner_phase,
+                    input.pill_opacity,
+                    has_backdrop,
+                    input.hovered_action == Some(UiAction::SelectSecondaryAnti),
+                );
             }
         }
         if let Some(s_rect) = shelf_rect {
@@ -546,6 +588,7 @@ impl IslandRenderer {
         opacity: f32,
         has_backdrop: bool,
         show_media_aura: bool,
+        emphasis_border: Option<&ID2D1SolidColorBrush>,
     ) {
         let top = pill.top + 0.5;
         let bottom = pill.top + pill.height - 0.5;
@@ -655,6 +698,14 @@ impl IslandRenderer {
             canvas
                 .ctx
                 .DrawRoundedRectangle(&rounded, &self.brushes.glass_border, 1.15, None);
+
+            if let Some(alert_brush) = emphasis_border {
+                alert_brush.SetOpacity(opacity * 0.85);
+                canvas
+                    .ctx
+                    .DrawRoundedRectangle(&rounded, alert_brush, 1.65, None);
+                alert_brush.SetOpacity(1.0);
+            }
         }
     }
 
@@ -715,6 +766,7 @@ impl IslandRenderer {
             IslandMode::Slim => unsafe { self.draw_slim(canvas, input) },
             IslandMode::Compact => unsafe { self.draw_compact(canvas, input) },
             IslandMode::Expanded => unsafe { self.draw_expanded(canvas, input) },
+            IslandMode::AntiExpanded => unsafe { self.draw_anti_expanded(canvas, input) },
             IslandMode::Settings => unsafe { self.draw_settings(canvas, input) },
             IslandMode::AudioDevices => unsafe { self.draw_audio_devices(canvas, input) },
             IslandMode::Notice => unsafe { self.draw_notice(canvas, input) },
@@ -953,7 +1005,7 @@ fn mode_content_reveal_alpha(pill: PillRectDip, mode: IslandMode, target_h: f32)
             let h_fade = ((88.0 - pill.height) / 42.0).clamp(0.0, 1.0);
             w_fade.min(h_fade)
         }
-        IslandMode::Expanded | IslandMode::Notice => {
+        IslandMode::Expanded | IslandMode::AntiExpanded | IslandMode::Notice => {
             let grow_fade = ((pill.height - 58.0) / 52.0).clamp(0.0, 1.0);
             let shrink_fade = ((245.0 - pill.height) / 60.0).clamp(0.0, 1.0);
             grow_fade.min(shrink_fade)

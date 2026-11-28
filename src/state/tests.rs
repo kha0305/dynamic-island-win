@@ -65,11 +65,12 @@ fn animator_stops_after_reaching_target() {
 fn settings_hitboxes_stay_inside_pill_and_do_not_overlap() {
     let mut anim = IslandAnimator::new(IslandMode::Settings);
     let pill = anim.current_pill();
-    let mut hitboxes = Vec::with_capacity(16);
+    let mut hitboxes = Vec::with_capacity(17);
     fill_interactive_hitboxes(pill, IslandMode::Settings, &mut hitboxes);
-    assert_eq!(hitboxes.len(), 16);
+    assert_eq!(hitboxes.len(), 17);
     assert!(hitboxes.iter().any(|hb| hb.action == UiAction::CheckUpdate));
     assert!(hitboxes.iter().any(|hb| hb.action == UiAction::OpenAudioDevices));
+    assert!(hitboxes.iter().any(|hb| hb.action == UiAction::ToggleHudDevice));
     assert!(hitboxes.iter().any(|hb| hb.action == UiAction::ToggleAntiMonitor));
     assert!(hitboxes.iter().any(|hb| hb.action == UiAction::ToggleAntiHooks));
 
@@ -375,6 +376,32 @@ fn file_shelf_stays_right_of_island_and_gates_delete_all_on_selection() {
         assert!(a.rect.left >= panel.left && a.rect.right <= panel.left + panel.width);
         assert!(a.rect.top >= panel.top && a.rect.bottom <= panel.top + panel.height);
         for b in hitboxes.iter().skip(i + 1) {
+            let overlap_x = a.rect.left < b.rect.right && a.rect.right > b.rect.left;
+            let overlap_y = a.rect.top < b.rect.bottom && a.rect.bottom > b.rect.top;
+            assert!(!(overlap_x && overlap_y));
+        }
+    }
+}
+
+#[test]
+fn compact_media_and_anti_expanded_hitboxes_are_valid() {
+    let compact = IslandAnimator::new(IslandMode::Compact).current_pill();
+    let mut c_boxes = Vec::new();
+    fill_compact_media_hitboxes(compact, &mut c_boxes);
+    assert_eq!(c_boxes.len(), 1);
+    assert_eq!(c_boxes[0].action, UiAction::OpenAudioDevices);
+    assert!(
+        c_boxes[0].rect.left >= compact.left && c_boxes[0].rect.right <= compact.left + compact.width
+    );
+
+    let anti = IslandAnimator::new(IslandMode::AntiExpanded).current_pill();
+    let mut a_boxes = Vec::new();
+    fill_interactive_hitboxes(anti, IslandMode::AntiExpanded, &mut a_boxes);
+    assert_eq!(a_boxes.len(), 3);
+    for (i, a) in a_boxes.iter().enumerate() {
+        assert!(a.rect.left >= anti.left && a.rect.right <= anti.left + anti.width);
+        assert!(a.rect.top >= anti.top && a.rect.bottom <= anti.top + anti.height);
+        for b in a_boxes.iter().skip(i + 1) {
             let overlap_x = a.rect.left < b.rect.right && a.rect.right > b.rect.left;
             let overlap_y = a.rect.top < b.rect.bottom && a.rect.bottom > b.rect.top;
             assert!(!(overlap_x && overlap_y));

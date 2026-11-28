@@ -68,7 +68,16 @@ impl IslandRenderer {
                     &self.brushes.text_primary
                 };
                 unsafe {
-                    self.draw_speaker_icon(canvas, cx, cy, display_level, muted, speaker_brush);
+                    self.draw_audio_output_icon(
+                        canvas,
+                        cx,
+                        cy,
+                        input.current_audio_device_kind,
+                        display_level,
+                        muted,
+                        1.0,
+                        speaker_brush,
+                    );
                 }
 
                 let dev_label = if show_device_name && !is_dragging {
@@ -329,33 +338,377 @@ impl IslandRenderer {
                     );
                 }
             }
+            HudContent::Device {
+                category,
+                connected,
+                battery_percent,
+            } => {
+                let cy = p.top + p.height * 0.5;
+                let text_primary = self.brushes.text_primary.clone();
+                let text_secondary = self.brushes.text_secondary.clone();
+                let icon_brush = if !connected {
+                    self.brushes.text_secondary.clone()
+                } else if category == DeviceHudCategory::Bluetooth {
+                    self.brushes.sys_accent.clone()
+                } else {
+                    self.brushes.power_ok.clone()
+                };
+                unsafe {
+                    self.draw_device_hud_icon(canvas, p.left + 21.0, cy, category, &icon_brush);
+                }
+
+                let device_title = input
+                    .hud_device_name
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Thiết bị ngoại vi");
+                let status_line = match (category, connected, battery_percent) {
+                    (DeviceHudCategory::Bluetooth, true, Some(pct)) => {
+                        format!("Đã kết nối · Pin {pct}%")
+                    }
+                    (_, true, _) => String::from("Đã kết nối"),
+                    (DeviceHudCategory::Bluetooth, false, _) => String::from("Đã ngắt kết nối"),
+                    (_, false, _) => String::from("Đã rút thiết bị"),
+                };
+                let right_reserve = if connected && battery_percent.is_some() {
+                    68.0
+                } else {
+                    18.0
+                };
+                let sub_brush = if connected {
+                    &icon_brush
+                } else {
+                    &text_secondary
+                };
+                unsafe {
+                    self.draw_text(
+                        canvas,
+                        device_title,
+                        TextFormatSlot::Compact,
+                        &text_primary,
+                        UiRectDip {
+                            left: p.left + 40.0,
+                            top: p.top + 4.0,
+                            right: p.left + p.width - right_reserve,
+                            bottom: p.top + 20.0,
+                        },
+                    );
+                    self.draw_text(
+                        canvas,
+                        &status_line,
+                        TextFormatSlot::CompactSub,
+                        sub_brush,
+                        UiRectDip {
+                            left: p.left + 40.0,
+                            top: p.top + 19.0,
+                            right: p.left + p.width - right_reserve,
+                            bottom: p.top + 34.0,
+                        },
+                    );
+                }
+                if connected && let Some(pct) = battery_percent {
+                    let bat_brush = if pct <= 20 {
+                        self.brushes.power_warn.clone()
+                    } else {
+                        self.brushes.power_ok.clone()
+                    };
+                    let pct_text = format!("{pct}%");
+                    unsafe {
+                        self.draw_battery_icon(
+                            canvas,
+                            p.left + p.width - 23.0,
+                            cy - 5.0,
+                            (pct as f32 / 100.0).clamp(0.08, 1.0),
+                            false,
+                            &bat_brush,
+                        );
+                        self.draw_text(
+                            canvas,
+                            &pct_text,
+                            TextFormatSlot::CompactSub,
+                            &bat_brush,
+                            UiRectDip {
+                                left: p.left + p.width - 62.0,
+                                top: p.top + 21.0,
+                                right: p.left + p.width - 13.0,
+                                bottom: p.top + 36.0,
+                            },
+                        );
+                    }
+                }
+            }
         }
     }
 
-    pub(super) unsafe fn draw_speaker_icon(
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn draw_audio_output_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        kind: AudioOutputKind,
+        level: f32,
+        muted: bool,
+        scale: f32,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        match kind {
+            AudioOutputKind::Speaker => unsafe {
+                self.draw_speaker_icon_scaled(canvas, cx, cy, level, muted, scale, brush);
+            },
+            AudioOutputKind::Headphones => unsafe {
+                self.draw_headphones_icon(canvas, cx, cy, scale, muted, brush);
+            },
+            AudioOutputKind::Bluetooth => unsafe {
+                self.draw_bluetooth_icon(canvas, cx, cy, scale, muted, brush);
+            },
+        }
+    }
+
+    unsafe fn draw_device_hud_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        category: DeviceHudCategory,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        match category {
+            DeviceHudCategory::Bluetooth => unsafe {
+                self.draw_bluetooth_icon(canvas, cx, cy, 1.05, false, brush);
+            },
+            DeviceHudCategory::Headphones => unsafe {
+                self.draw_headphones_icon(canvas, cx, cy, 1.05, false, brush);
+            },
+            DeviceHudCategory::Usb => unsafe {
+                self.draw_usb_icon(canvas, cx, cy, brush);
+            },
+            DeviceHudCategory::Peripheral => unsafe {
+                self.draw_peripheral_icon(canvas, cx, cy, brush);
+            },
+        }
+    }
+
+    unsafe fn draw_bluetooth_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        scale: f32,
+        muted: bool,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let s = scale.clamp(0.65, 1.3);
+        let stroke = Some(&self.icons.round_stroke);
+        let w = 1.5 * s;
+        let pts = [
+            (0.0, -6.5 * s, 0.0, 6.5 * s),
+            (0.0, -6.5 * s, 4.2 * s, -3.0 * s),
+            (4.2 * s, -3.0 * s, -4.0 * s, 3.0 * s),
+            (0.0, 6.5 * s, 4.2 * s, 3.0 * s),
+            (4.2 * s, 3.0 * s, -4.0 * s, -3.0 * s),
+        ];
+        unsafe {
+            for (x1, y1, x2, y2) in pts {
+                canvas.ctx.DrawLine(
+                    Vector2 { X: cx + x1, Y: cy + y1 },
+                    Vector2 { X: cx + x2, Y: cy + y2 },
+                    brush,
+                    w,
+                    stroke,
+                );
+            }
+            if muted {
+                canvas.ctx.DrawLine(
+                    Vector2 { X: cx - 5.2 * s, Y: cy + 5.2 * s },
+                    Vector2 { X: cx + 5.2 * s, Y: cy - 5.2 * s },
+                    brush,
+                    w,
+                    stroke,
+                );
+            }
+        }
+    }
+
+    unsafe fn draw_headphones_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        scale: f32,
+        muted: bool,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let s = scale.clamp(0.65, 1.3);
+        let stroke = Some(&self.icons.round_stroke);
+        let w = 1.55 * s;
+        unsafe {
+            // Vòng cung trùm đầu
+            canvas.ctx.DrawLine(
+                Vector2 { X: cx - 5.4 * s, Y: cy + 1.0 * s },
+                Vector2 { X: cx - 4.4 * s, Y: cy - 3.6 * s },
+                brush,
+                w,
+                stroke,
+            );
+            canvas.ctx.DrawLine(
+                Vector2 { X: cx - 4.4 * s, Y: cy - 3.6 * s },
+                Vector2 { X: cx, Y: cy - 5.4 * s },
+                brush,
+                w,
+                stroke,
+            );
+            canvas.ctx.DrawLine(
+                Vector2 { X: cx, Y: cy - 5.4 * s },
+                Vector2 { X: cx + 4.4 * s, Y: cy - 3.6 * s },
+                brush,
+                w,
+                stroke,
+            );
+            canvas.ctx.DrawLine(
+                Vector2 { X: cx + 4.4 * s, Y: cy - 3.6 * s },
+                Vector2 { X: cx + 5.4 * s, Y: cy + 1.0 * s },
+                brush,
+                w,
+                stroke,
+            );
+            // Hai chụp tai
+            let left_cup = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: cx - 6.6 * s,
+                    top: cy - 0.6 * s,
+                    right: cx - 3.2 * s,
+                    bottom: cy + 5.4 * s,
+                },
+                radiusX: 1.5 * s,
+                radiusY: 1.5 * s,
+            };
+            let right_cup = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F {
+                    left: cx + 3.2 * s,
+                    top: cy - 0.6 * s,
+                    right: cx + 6.6 * s,
+                    bottom: cy + 5.4 * s,
+                },
+                radiusX: 1.5 * s,
+                radiusY: 1.5 * s,
+            };
+            canvas.ctx.FillRoundedRectangle(&left_cup, brush);
+            canvas.ctx.FillRoundedRectangle(&right_cup, brush);
+            if muted {
+                canvas.ctx.DrawLine(
+                    Vector2 { X: cx - 5.6 * s, Y: cy + 5.4 * s },
+                    Vector2 { X: cx + 5.6 * s, Y: cy - 5.0 * s },
+                    brush,
+                    w,
+                    stroke,
+                );
+            }
+        }
+    }
+
+    unsafe fn draw_usb_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let cap = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 3.2,
+                top: cy - 6.4,
+                right: cx + 3.2,
+                bottom: cy - 2.2,
+            },
+            radiusX: 0.9,
+            radiusY: 0.9,
+        };
+        let body = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 4.6,
+                top: cy - 2.4,
+                right: cx + 4.6,
+                bottom: cy + 6.4,
+            },
+            radiusX: 2.0,
+            radiusY: 2.0,
+        };
+        unsafe {
+            canvas.ctx.DrawRoundedRectangle(&cap, brush, 1.35, None);
+            canvas.ctx.FillRoundedRectangle(&body, brush);
+        }
+    }
+
+    unsafe fn draw_peripheral_icon(
+        &self,
+        canvas: DrawCanvas<'_>,
+        cx: f32,
+        cy: f32,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        let outer = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 6.0,
+                top: cy - 5.4,
+                right: cx + 6.0,
+                bottom: cy + 5.4,
+            },
+            radiusX: 2.8,
+            radiusY: 2.8,
+        };
+        let inner = D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: cx - 2.2,
+                top: cy - 2.2,
+                right: cx + 2.2,
+                bottom: cy + 2.2,
+            },
+            radiusX: 2.2,
+            radiusY: 2.2,
+        };
+        unsafe {
+            canvas.ctx.DrawRoundedRectangle(&outer, brush, 1.45, None);
+            canvas.ctx.FillRoundedRectangle(&inner, brush);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn draw_speaker_icon_scaled(
         &self,
         canvas: DrawCanvas<'_>,
         cx: f32,
         cy: f32,
         level: f32,
         muted: bool,
+        scale: f32,
         brush: &ID2D1SolidColorBrush,
     ) {
+        let s = scale.clamp(0.65, 1.3);
         let box_rect = D2D1_ROUNDED_RECT {
             rect: D2D_RECT_F {
-                left: cx - 7.5,
-                top: cy - 2.6,
-                right: cx - 3.6,
-                bottom: cy + 2.6,
+                left: cx - 7.5 * s,
+                top: cy - 2.6 * s,
+                right: cx - 3.6 * s,
+                bottom: cy + 2.6 * s,
             },
-            radiusX: 1.0,
-            radiusY: 1.0,
+            radiusX: 1.0 * s,
+            radiusY: 1.0 * s,
         };
         unsafe {
             canvas.ctx.FillRoundedRectangle(&box_rect, brush);
         }
         if let Ok(base) = self.icons.speaker_cone.cast::<ID2D1Geometry>() {
-            canvas.set_local_translation(cx - 2.4, cy);
+            let mat = Matrix3x2 {
+                M11: s,
+                M12: 0.0,
+                M21: 0.0,
+                M22: s,
+                M31: canvas.offset_x_px + (cx - 2.4 * s) * canvas.scale,
+                M32: canvas.offset_y_px + cy * canvas.scale,
+            };
+            let _ = mat;
+            canvas.set_local_translation(cx - 2.4 * s, cy);
             unsafe {
                 canvas.ctx.FillGeometry(&base, brush, None);
                 canvas
@@ -368,28 +721,28 @@ impl IslandRenderer {
             unsafe {
                 canvas.ctx.DrawLine(
                     Vector2 {
-                        X: cx + 2.0,
-                        Y: cy - 3.2,
+                        X: cx + 2.0 * s,
+                        Y: cy - 3.2 * s,
                     },
                     Vector2 {
-                        X: cx + 7.2,
-                        Y: cy + 3.2,
+                        X: cx + 7.2 * s,
+                        Y: cy + 3.2 * s,
                     },
                     brush,
-                    1.7,
+                    1.6 * s,
                     Some(&self.icons.round_stroke),
                 );
                 canvas.ctx.DrawLine(
                     Vector2 {
-                        X: cx + 7.2,
-                        Y: cy - 3.2,
+                        X: cx + 7.2 * s,
+                        Y: cy - 3.2 * s,
                     },
                     Vector2 {
-                        X: cx + 2.0,
-                        Y: cy + 3.2,
+                        X: cx + 2.0 * s,
+                        Y: cy + 3.2 * s,
                     },
                     brush,
-                    1.7,
+                    1.6 * s,
                     Some(&self.icons.round_stroke),
                 );
             }
@@ -397,13 +750,13 @@ impl IslandRenderer {
             if level > 0.02 {
                 let w1 = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
-                        left: cx + 2.4,
-                        top: cy - 2.6,
-                        right: cx + 4.1,
-                        bottom: cy + 2.6,
+                        left: cx + 2.4 * s,
+                        top: cy - 2.6 * s,
+                        right: cx + 4.0 * s,
+                        bottom: cy + 2.6 * s,
                     },
-                    radiusX: 0.85,
-                    radiusY: 0.85,
+                    radiusX: 0.8 * s,
+                    radiusY: 0.8 * s,
                 };
                 unsafe {
                     canvas.ctx.FillRoundedRectangle(&w1, brush);
@@ -412,13 +765,13 @@ impl IslandRenderer {
             if level >= 0.45 {
                 let w2 = D2D1_ROUNDED_RECT {
                     rect: D2D_RECT_F {
-                        left: cx + 5.3,
-                        top: cy - 4.6,
-                        right: cx + 7.0,
-                        bottom: cy + 4.6,
+                        left: cx + 5.2 * s,
+                        top: cy - 4.4 * s,
+                        right: cx + 6.8 * s,
+                        bottom: cy + 4.4 * s,
                     },
-                    radiusX: 0.85,
-                    radiusY: 0.85,
+                    radiusX: 0.8 * s,
+                    radiusY: 0.8 * s,
                 };
                 unsafe {
                     canvas.ctx.FillRoundedRectangle(&w2, brush);
@@ -667,12 +1020,14 @@ impl IslandRenderer {
                         hb.rect.right - 14.0
                     };
                     unsafe {
-                        self.draw_speaker_icon(
+                        self.draw_audio_output_icon(
                             canvas,
                             hb.rect.left + 19.0,
                             cy,
+                            dev.kind,
                             icon_level,
                             icon_muted,
+                            1.0,
                             &icon_brush,
                         );
                         self.draw_text(

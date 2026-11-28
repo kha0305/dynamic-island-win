@@ -8,13 +8,30 @@ pub use animator::{
     effective_mode, target_dimensions_for_mode, target_dimensions_for_state, target_top_for_mode,
 };
 pub use hitboxes::{
-    MAX_SHELF_VISIBLE_ROWS, fill_audio_devices_hitboxes, fill_interactive_hitboxes,
-    fill_notice_hitboxes, fill_shelf_hitboxes, fill_volume_hud_hitboxes, pill_contains_dip,
+    MAX_SHELF_VISIBLE_ROWS, fill_anti_expanded_hitboxes, fill_audio_devices_hitboxes,
+    fill_compact_media_hitboxes, fill_interactive_hitboxes, fill_notice_hitboxes,
+    fill_shelf_hitboxes, fill_volume_hud_hitboxes, left_anti_pill_rect, pill_contains_dip,
     settings_section_tops, shelf_contains_dip, shelf_pill_rect,
     should_close_subview_on_header_click, should_collapse_expanded_on_blank_click,
     should_collapse_shelf_on_header_click, timeline_ratio_for_x, timeline_seek_hit_bounds,
     volume_seek_hit_bounds,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AudioOutputKind {
+    #[default]
+    Speaker,
+    Headphones,
+    Bluetooth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceHudCategory {
+    Bluetooth,
+    Headphones,
+    Usb,
+    Peripheral,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IslandMode {
@@ -22,6 +39,7 @@ pub enum IslandMode {
     Slim,
     Compact,
     Expanded,
+    AntiExpanded,
     Settings,
     AudioDevices,
     Notice,
@@ -63,6 +81,10 @@ pub enum UiAction {
     ToggleHudVolume,
     ToggleHudWheel,
     ToggleHudPower,
+    ToggleHudDevice,
+    FocusAntiWindow,
+    DismissAnti,
+    SelectSecondaryAnti,
     ToggleAutoHideIdle,
     ToggleAutoHideFullscreen,
     ToggleVisualizer,
@@ -92,6 +114,11 @@ pub enum HudContent {
         on_ac: bool,
         percent: Option<u8>,
         low_battery: bool,
+    },
+    Device {
+        category: DeviceHudCategory,
+        connected: bool,
+        battery_percent: Option<u8>,
     },
 }
 
@@ -222,6 +249,7 @@ pub struct AppConfig {
     pub hud_volume_enabled: bool,
     pub hud_wheel_enabled: bool,
     pub hud_power_enabled: bool,
+    pub hud_device_enabled: bool,
     pub auto_hide_when_idle: bool,
     pub auto_hide_fullscreen: bool,
     pub visualizer_enabled: bool,
@@ -238,6 +266,7 @@ impl Default for AppConfig {
             hud_volume_enabled: true,
             hud_wheel_enabled: true,
             hud_power_enabled: true,
+            hud_device_enabled: true,
             auto_hide_when_idle: false,
             auto_hide_fullscreen: true,
             visualizer_enabled: true,
@@ -250,7 +279,7 @@ impl Default for AppConfig {
 
 /// Kích thước cố định tối đa của bề mặt SwapChain (DIP) đủ chứa Dynamic Island căn giữa và File Shelf cạnh phải trên màn FHD.
 pub const MAX_SURFACE_WIDTH_DIP: f32 = 1040.0;
-pub const MAX_SURFACE_HEIGHT_DIP: f32 = 440.0;
+pub const MAX_SURFACE_HEIGHT_DIP: f32 = 460.0;
 pub const TOP_MARGIN_DIP: f32 = 6.0;
 pub const MAX_AUDIO_DEVICES_VISIBLE: usize = 5;
 

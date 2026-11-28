@@ -2,7 +2,7 @@ use super::*;
 
 impl IslandRenderer {
     pub(super) unsafe fn draw_settings(&mut self, canvas: DrawCanvas<'_>, input: &RenderFrameInput<'_>) {
-        let p = virtual_pill_anchored(input.pill, 424.0, 398.0, false);
+        let p = virtual_pill_anchored(input.pill, 424.0, 436.0, false);
         let text_primary = self.brushes.text_primary.clone();
         let text_secondary = self.brushes.text_secondary.clone();
         let sys_accent = self.brushes.sys_accent.clone();
@@ -146,6 +146,16 @@ impl IslandRenderer {
                         hb.rect,
                         "HUD Pin / Sạc",
                         input.config.hud_power_enabled,
+                        &text_primary,
+                        &sys_accent,
+                    );
+                },
+                UiAction::ToggleHudDevice => unsafe {
+                    self.draw_toggle_tile(
+                        canvas,
+                        hb.rect,
+                        "HUD Thiết bị",
+                        input.config.hud_device_enabled,
                         &text_primary,
                         &sys_accent,
                     );

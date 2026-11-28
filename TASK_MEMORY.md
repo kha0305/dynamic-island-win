@@ -27,11 +27,11 @@
 | Thành phần | Đường dẫn | Trạng thái | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | Luật riêng dự án | `GEMINI.md` | HOÀN TẤT | Kế thừa `global_rules.md` + ràng buộc Win32/Rust |
-| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#034 gồm `v0.3.0`–`v0.3.3` và **`v0.3.4`** (`#034`) |
-| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.4` và ghi nhận Lỗi #001–#019 |
-| Đặc tả tính năng | `specs/setup-startup-icon/spec.md` (kế thừa `specs/dynamic-island/`..`v03-shelf-anti-refactor/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ `v0.3.0`–`v0.3.4` |
-| Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT v0.3.4 | Đã hoàn thành toàn bộ đầu việc đến **`v0.3.4`** (`setup-startup-icon`) |
-| Mã nguồn & CI/CD | `Cargo.toml`, `build.rs`, `assets/app.ico`, `src/**/*.rs`, `.github/workflows/release.yml` | SẴN SÀNG PHÁT HÀNH v0.3.4 | `clippy --locked` sạch, `48/48` + `1/1` tests đạt, `dist/` có cả Setup (`1,458,688 bytes`) lẫn Portable (`971,776 bytes` / `.zip` `500,868 bytes`) |
+| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#039 gồm `v0.3.5`, `dual-anti-left-pill` và sửa lỗi #022–#024 |
+| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist (`53/53` + `1/1`) và ghi nhận Lỗi #001–#024 |
+| Đặc tả tính năng | `specs/dual-anti-left-pill/spec.md` (kế thừa `specs/dynamic-island/`..`device-hud-and-anti-fix/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ đến `dual-anti-left-pill` |
+| Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT | Đã hoàn thành toàn bộ đầu việc đến `dual-anti-left-pill` |
+| Mã nguồn & CI/CD | `Cargo.toml`, `build.rs`, `assets/app.ico`, `src/**/*.rs`, `.github/workflows/release.yml` | SẴN SÀNG PHÁT HÀNH | `clippy --locked` sạch, `53/53` + `1/1` tests đạt, `dist/` có cả Setup (`1,610,240 bytes`) lẫn Portable (`1,123,328 bytes` / `.zip` `573,958 bytes`) |
 
 ---
 

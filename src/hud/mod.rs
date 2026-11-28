@@ -1,5 +1,6 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Media::Audio::Endpoints::{
@@ -16,15 +17,20 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 use windows::core::{BOOL, GUID, PCWSTR, implement};
 
+mod device;
 mod policy_config;
 mod power;
 #[cfg(test)]
 mod tests;
 
+pub use device::DeviceHudEvent;
+use device::{DeviceChangeTracker, DeviceNotificationGuard};
 use policy_config::{
-    enumerate_output_devices, policy_com, read_device_friendly_name, read_device_id,
+    enumerate_output_devices, policy_com, read_audio_output_kind, read_device_friendly_name,
+    read_device_id,
 };
 pub use power::{GUID_ACDC_POWER_SOURCE, PowerSnapshot, PowerStateTracker, read_system_power_status};
+use crate::state::AudioOutputKind;
 
 pub const WM_APP_HUD_EVENT: u32 = WM_APP + 7;
 pub const HUD_EXPIRE_DELAY_MS: u32 = 2_000;
@@ -38,6 +44,7 @@ const APP_VOLUME_EVENT_CONTEXT: GUID = GUID::from_u128(0x9a4b82e1_7f3c_4c68_b29d
 pub struct AudioOutputDevice {
     pub id: String,
     pub name: String,
+    pub kind: AudioOutputKind,
     pub is_default: bool,
 }
 
@@ -64,12 +71,14 @@ pub enum HudWorkerEvent {
         level: f32,
         muted: bool,
         device_name: Option<String>,
+        device_kind: AudioOutputKind,
         switched_device: bool,
         show_hud: bool,
     },
     DevicesChanged {
         devices: Vec<AudioOutputDevice>,
     },
+    DeviceChanged(DeviceHudEvent),
     PowerSync {
         snap: PowerSnapshot,
         initial: bool,
@@ -128,10 +137,14 @@ pub fn apply_volume_step(current: f32, steps: i32) -> f32 {
     clamp_volume_ratio(base + delta)
 }
 
-enum AudioThreadMsg {
+pub(crate) enum AudioThreadMsg {
     Command(AudioCommand),
     ReattachDefaultDevice,
     RefreshDeviceList,
+    PnpDeviceNotify {
+        instance_id: String,
+        arrival: bool,
+    },
     EndpointNotify {
         level: f32,
         muted: bool,
@@ -213,6 +226,7 @@ struct AttachedEndpoint {
     _device: IMMDevice,
     id: Option<String>,
     name: String,
+    kind: AudioOutputKind,
     volume: IAudioEndpointVolume,
     callback: IAudioEndpointVolumeCallback,
 }
@@ -313,6 +327,7 @@ fn attach_default_endpoint(
     let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }.ok()?;
     let id = read_device_id(&device);
     let name = read_device_friendly_name(&device);
+    let kind = read_audio_output_kind(&device, &name);
     let volume: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_ALL, None) }.ok()?;
     let callback: IAudioEndpointVolumeCallback = VolumeChangeCallback { tx: tx.clone() }.into();
     unsafe { volume.RegisterControlChangeNotify(&callback) }.ok()?;
@@ -327,12 +342,61 @@ fn attach_default_endpoint(
             _device: device,
             id,
             name,
+            kind,
             volume,
             callback,
         },
         level,
         muted,
     ))
+}
+
+fn emit_audio_plug_diff(
+    prev: &[AudioOutputDevice],
+    next: &[AudioOutputDevice],
+    tracker: &mut DeviceChangeTracker,
+    event_tx: &Sender<HudWorkerEvent>,
+    hwnd_raw: usize,
+    now: Instant,
+) {
+    let mut emitted = false;
+    for dev in next {
+        if !prev.iter().any(|p| p.id == dev.id)
+            && matches!(
+                dev.kind,
+                AudioOutputKind::Headphones | AudioOutputKind::Bluetooth
+            )
+            && let Some(ev) = tracker.handle_audio_endpoint_change(
+                dev.name.clone(),
+                true,
+                dev.kind == AudioOutputKind::Bluetooth,
+                now,
+            )
+        {
+            let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+            emitted = true;
+        }
+    }
+    for old in prev {
+        if !next.iter().any(|n| n.id == old.id)
+            && matches!(
+                old.kind,
+                AudioOutputKind::Headphones | AudioOutputKind::Bluetooth
+            )
+            && let Some(ev) = tracker.handle_audio_endpoint_change(
+                old.name.clone(),
+                false,
+                old.kind == AudioOutputKind::Bluetooth,
+                now,
+            )
+        {
+            let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+            emitted = true;
+        }
+    }
+    if emitted {
+        post_hud_wake(hwnd_raw);
+    }
 }
 
 fn run_audio_worker(
@@ -347,10 +411,36 @@ fn run_audio_worker(
         initial: true,
     });
     post_hud_wake(hwnd_raw);
-    let Ok(enumerator) = (unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) }) else {
+
+    let mut device_tracker = DeviceChangeTracker::new_seeded();
+    let _pnp_guard = DeviceNotificationGuard::register(&worker_tx);
+
+    let enumerator_res =
+        unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) };
+    let Ok(enumerator) = enumerator_res else {
         let _ = event_tx.send(HudWorkerEvent::AudioUnavailable);
         post_hud_wake(hwnd_raw);
-        for msg in msg_rx.iter() {
+        loop {
+            let next_msg = if let Some(wait) = device_tracker.next_battery_check_timeout(Instant::now()) {
+                match msg_rx.recv_timeout(wait) {
+                    Ok(m) => Some(m),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match msg_rx.recv() {
+                    Ok(m) => Some(m),
+                    Err(_) => break,
+                }
+            };
+            let now = Instant::now();
+            for ev in device_tracker.poll_pending_battery_checks(now) {
+                let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+                post_hud_wake(hwnd_raw);
+            }
+            let Some(msg) = next_msg else {
+                continue;
+            };
             match msg {
                 AudioThreadMsg::Command(AudioCommand::Shutdown) => break,
                 AudioThreadMsg::Command(AudioCommand::RefreshPower) => {
@@ -360,9 +450,19 @@ fn run_audio_worker(
                     });
                     post_hud_wake(hwnd_raw);
                 }
+                AudioThreadMsg::PnpDeviceNotify {
+                    instance_id,
+                    arrival,
+                } => {
+                    for ev in device_tracker.handle_pnp_event(&instance_id, arrival, now) {
+                        let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+                        post_hud_wake(hwnd_raw);
+                    }
+                }
                 _ => {}
             }
         }
+        drop(_pnp_guard);
         drop(com);
         return;
     };
@@ -381,9 +481,9 @@ fn run_audio_worker(
         client: dev_client,
     });
 
-    let (initial_devices, _default_name) = enumerate_output_devices(&enumerator);
+    let (mut last_devices, _, _) = enumerate_output_devices(&enumerator);
     let _ = event_tx.send(HudWorkerEvent::DevicesChanged {
-        devices: initial_devices,
+        devices: last_devices.clone(),
     });
 
     let (mut attached, mut current_level, mut current_muted) =
@@ -393,6 +493,7 @@ fn run_audio_worker(
                     level: lvl,
                     muted: m,
                     device_name: Some(ep.name.clone()),
+                    device_kind: ep.kind,
                     switched_device: false,
                     show_hud: false,
                 });
@@ -406,12 +507,39 @@ fn run_audio_worker(
             }
         };
 
-    while let Ok(first) = msg_rx.recv() {
+    loop {
+        let first_opt = if let Some(wait) = device_tracker.next_battery_check_timeout(Instant::now()) {
+            match msg_rx.recv_timeout(wait) {
+                Ok(m) => Some(m),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match msg_rx.recv() {
+                Ok(m) => Some(m),
+                Err(_) => break,
+            }
+        };
+
+        let now = Instant::now();
+        let battery_events = device_tracker.poll_pending_battery_checks(now);
+        if !battery_events.is_empty() {
+            for ev in battery_events {
+                let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+            }
+            post_hud_wake(hwnd_raw);
+        }
+
+        let Some(first) = first_opt else {
+            continue;
+        };
+
         let mut pending_shutdown = false;
         let mut pending_reattach = false;
         let mut pending_refresh_devices = false;
         let mut pending_switch_device: Option<String> = None;
         let mut pending_power_refresh = false;
+        let mut pending_pnp: Vec<(String, bool)> = Vec::new();
         let mut toggle_mute_count = 0_u32;
         let mut pending_set_vol: Option<f32> = None;
         let mut pending_step_sum: i32 = 0;
@@ -443,6 +571,12 @@ fn run_audio_worker(
                 AudioThreadMsg::RefreshDeviceList => {
                     pending_refresh_devices = true;
                 }
+                AudioThreadMsg::PnpDeviceNotify {
+                    instance_id,
+                    arrival,
+                } => {
+                    pending_pnp.push((instance_id, arrival));
+                }
                 AudioThreadMsg::EndpointNotify {
                     level,
                     muted,
@@ -466,6 +600,19 @@ fn run_audio_worker(
         }
         if pending_shutdown {
             break;
+        }
+
+        if !pending_pnp.is_empty() {
+            let mut sent_any = false;
+            for (instance_id, arrival) in pending_pnp {
+                for ev in device_tracker.handle_pnp_event(&instance_id, arrival, now) {
+                    let _ = event_tx.send(HudWorkerEvent::DeviceChanged(ev));
+                    sent_any = true;
+                }
+            }
+            if sent_any {
+                post_hud_wake(hwnd_raw);
+            }
         }
 
         if pending_power_refresh {
@@ -495,6 +642,7 @@ fn run_audio_worker(
             if let Some((ep, lvl, m)) = attach_default_endpoint(&enumerator, &worker_tx) {
                 let endpoint_changed = ep.id != prev_id;
                 let device_name = ep.name.clone();
+                let device_kind = ep.kind;
                 attached = Some(ep);
                 current_level = lvl;
                 current_muted = m;
@@ -503,6 +651,7 @@ fn run_audio_worker(
                     level: lvl,
                     muted: m,
                     device_name: Some(device_name),
+                    device_kind,
                     switched_device: switched,
                     show_hud: switched,
                 });
@@ -515,9 +664,20 @@ fn run_audio_worker(
         }
 
         if pending_refresh_devices {
-            let (devices, _) = enumerate_output_devices(&enumerator);
-            let _ = event_tx.send(HudWorkerEvent::DevicesChanged { devices });
-            post_hud_wake(hwnd_raw);
+            let (devices, _, _) = enumerate_output_devices(&enumerator);
+            if devices != last_devices {
+                emit_audio_plug_diff(
+                    &last_devices,
+                    &devices,
+                    &mut device_tracker,
+                    &event_tx,
+                    hwnd_raw,
+                    now,
+                );
+                last_devices = devices.clone();
+                let _ = event_tx.send(HudWorkerEvent::DevicesChanged { devices });
+                post_hud_wake(hwnd_raw);
+            }
         }
 
         if toggle_mute_count % 2 == 1
@@ -570,6 +730,9 @@ fn run_audio_worker(
                     level,
                     muted,
                     device_name: attached.as_ref().map(|ep| ep.name.clone()),
+                    device_kind: attached
+                        .as_ref()
+                        .map_or(AudioOutputKind::Speaker, |ep| ep.kind),
                     switched_device: false,
                     show_hud: true,
                 });
@@ -578,6 +741,7 @@ fn run_audio_worker(
         }
     }
 
+    drop(_pnp_guard);
     drop(attached);
     drop(_dev_guard);
     drop(com);

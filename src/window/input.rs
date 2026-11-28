@@ -44,6 +44,9 @@ impl WindowController {
         let pill = self.animator.current_pill();
         pill_contains_dip(pill, x_dip, y_dip, 2.0)
             || self
+                .active_left_anti_rect(pill)
+                .is_some_and(|lr| pill_contains_dip(lr, x_dip, y_dip, 2.0))
+            || self
                 .active_shelf_rect(pill)
                 .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0))
             || self
@@ -85,13 +88,16 @@ impl WindowController {
         let y_dip = pt.y as f32 / scale;
         let pill = self.animator.current_pill();
         let over_pill = pill_contains_dip(pill, x_dip, y_dip, 2.0);
+        let over_left_anti = self
+            .active_left_anti_rect(pill)
+            .is_some_and(|lr| pill_contains_dip(lr, x_dip, y_dip, 2.0));
         let over_shelf = self
             .active_shelf_rect(pill)
             .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0));
         let over_bridge = self
             .active_drag_bridge_rect(pill)
             .is_some_and(|br| shelf_contains_dip(br, x_dip, y_dip, 1.0));
-        if over_pill || over_shelf || over_bridge {
+        if over_pill || over_left_anti || over_shelf || over_bridge {
             HTCLIENT as isize
         } else {
             HTTRANSPARENT as isize
@@ -109,12 +115,17 @@ impl WindowController {
         }
         matches!(
             self.requested_mode,
-            IslandMode::Settings | IslandMode::AudioDevices
+            IslandMode::Settings | IslandMode::AudioDevices | IslandMode::AntiExpanded
         ) && should_close_subview_on_header_click(pill, (x_dip, y_dip), (x_dip, y_dip))
     }
 
     pub(super) fn hit_test_action(&mut self, x_dip: f32, y_dip: f32) -> Option<UiAction> {
         let pill = self.animator.current_pill();
+        if let Some(l_rect) = self.active_left_anti_rect(pill)
+            && pill_contains_dip(l_rect, x_dip, y_dip, 1.0)
+        {
+            return Some(UiAction::SelectSecondaryAnti);
+        }
         if let Some(s_rect) = self.active_shelf_rect(pill)
             && shelf_contains_dip(s_rect, x_dip, y_dip, 1.0)
         {
@@ -137,6 +148,12 @@ impl WindowController {
         if mode == IslandMode::Compact && matches!(self.active_hud, Some(HudContent::Volume { .. }))
         {
             fill_volume_hud_hitboxes(pill, &mut self.hitbox_scratch);
+        } else if mode == IslandMode::Compact
+            && self.active_hud.is_none()
+            && self.anti_display_snapshot().is_none()
+            && self.media_state.has_session
+        {
+            fill_compact_media_hitboxes(pill, &mut self.hitbox_scratch);
         } else if mode == IslandMode::AudioDevices {
             let visible = self
                 .audio_devices
@@ -314,10 +331,13 @@ impl WindowController {
         let (x_dip, y_dip) = self.client_dip_from_lparam(lparam);
         let pill = self.animator.current_pill();
         let over_pill = pill_contains_dip(pill, x_dip, y_dip, 2.0);
+        let over_left_anti = self
+            .active_left_anti_rect(pill)
+            .is_some_and(|lr| pill_contains_dip(lr, x_dip, y_dip, 2.0));
         let over_shelf = self
             .active_shelf_rect(pill)
             .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0));
-        if !over_pill && !over_shelf {
+        if !over_pill && !over_left_anti && !over_shelf {
             return CaptureChange::None;
         }
         self.ensure_mouse_tracked();
@@ -436,11 +456,15 @@ impl WindowController {
         }
 
         let pill = self.animator.current_pill();
+        let over_left_anti = self
+            .active_left_anti_rect(pill)
+            .is_some_and(|lr| pill_contains_dip(lr, x_dip, y_dip, 2.0));
         let over_shelf = self
             .active_shelf_rect(pill)
             .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0));
         if self.requested_mode == IslandMode::Slim
             && !pill_contains_dip(pill, x_dip, y_dip, 2.0)
+            && !over_left_anti
             && !over_shelf
         {
             return None;
@@ -538,7 +562,10 @@ impl WindowController {
                     self.render_current_frame();
                 }
             }
-        } else if self.requested_mode == IslandMode::Expanded {
+        } else if matches!(
+            self.requested_mode,
+            IslandMode::Expanded | IslandMode::AntiExpanded
+        ) {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
             if hover_changed && !self.animator.is_animating() {
                 self.render_current_frame();
@@ -709,11 +736,19 @@ impl WindowController {
 
         if matches!(
             self.requested_mode,
-            IslandMode::Settings | IslandMode::AudioDevices
+            IslandMode::Settings | IslandMode::AudioDevices | IslandMode::AntiExpanded
         ) {
             if should_close_subview_on_header_click(pill, click_down, (x_dip, y_dip)) {
                 self.hovered_header = false;
-                self.execute_ui_action(UiAction::BackToMedia);
+                if self.requested_mode == IslandMode::AntiExpanded {
+                    self.cancel_auto_collapse();
+                    self.anti_expanded_key = None;
+                    let next = self.collapsed_rest_mode();
+                    self.apply_return_mode(next);
+                    self.apply_target_and_render();
+                } else {
+                    self.execute_ui_action(UiAction::BackToMedia);
+                }
             }
             return (CaptureChange::None, false);
         }
@@ -731,10 +766,16 @@ impl WindowController {
         self.requested_mode = match self.requested_mode {
             IslandMode::Slim | IslandMode::Compact => {
                 self.cancel_compact_to_notch();
-                IslandMode::Expanded
+                self.anti_expanded_key = None;
+                if self.anti_display_snapshot().is_some() {
+                    IslandMode::AntiExpanded
+                } else {
+                    IslandMode::Expanded
+                }
             }
-            IslandMode::Expanded => {
+            IslandMode::Expanded | IslandMode::AntiExpanded => {
                 self.cancel_auto_collapse();
+                self.anti_expanded_key = None;
                 self.collapsed_rest_mode()
             }
             IslandMode::Settings => IslandMode::Settings,
@@ -742,7 +783,11 @@ impl WindowController {
             IslandMode::Notice => IslandMode::Notice,
             IslandMode::Hidden => IslandMode::Slim,
         };
-        if self.requested_mode == IslandMode::Expanded && !self.mouse_tracked {
+        if matches!(
+            self.requested_mode,
+            IslandMode::Expanded | IslandMode::AntiExpanded
+        ) && !self.mouse_tracked
+        {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
         } else if self.requested_mode == IslandMode::Compact
             && !self.mouse_tracked
@@ -790,6 +835,7 @@ impl WindowController {
             self.cancel_auto_collapse();
             self.settings_return_mode = match self.requested_mode {
                 IslandMode::Expanded => IslandMode::Expanded,
+                IslandMode::AntiExpanded => IslandMode::AntiExpanded,
                 IslandMode::AudioDevices => {
                     self.normalized_subview_return_mode(self.audio_devices_return_mode)
                 }
@@ -811,6 +857,7 @@ impl WindowController {
                 self.cancel_auto_collapse();
                 self.settings_return_mode = match self.requested_mode {
                     IslandMode::Expanded => IslandMode::Expanded,
+                    IslandMode::AntiExpanded => IslandMode::AntiExpanded,
                     IslandMode::AudioDevices => {
                         self.normalized_subview_return_mode(self.audio_devices_return_mode)
                     }
@@ -826,7 +873,9 @@ impl WindowController {
                 self.cancel_compact_to_notch();
                 self.cancel_auto_collapse();
                 self.audio_devices_return_mode = match self.requested_mode {
-                    IslandMode::Settings | IslandMode::Expanded => self.requested_mode,
+                    IslandMode::Settings | IslandMode::Expanded | IslandMode::AntiExpanded => {
+                        self.requested_mode
+                    }
                     _ => self.collapsed_rest_mode(),
                 };
                 self.hovered_action = None;
@@ -909,6 +958,49 @@ impl WindowController {
                 }
                 save_config(&self.config);
             }
+            UiAction::ToggleHudDevice => {
+                self.config.hud_device_enabled = !self.config.hud_device_enabled;
+                if !self.config.hud_device_enabled
+                    && matches!(self.active_hud, Some(HudContent::Device { .. }))
+                {
+                    self.clear_hud_state_quiet();
+                }
+                save_config(&self.config);
+            }
+            UiAction::FocusAntiWindow => {
+                if let Some(source) = self.anti_display_snapshot().map(|s| s.source) {
+                    let _ = focus_anti_window(self.hwnd, source);
+                }
+                self.cancel_auto_collapse();
+                self.anti_expanded_key = None;
+                let next = self.collapsed_rest_mode();
+                self.apply_return_mode(next);
+            }
+            UiAction::DismissAnti => {
+                self.cancel_auto_collapse();
+                if let Some((key, ts)) = self
+                    .anti_display_snapshot()
+                    .map(|s| (s.slot_key(), s.updated_unix_ms))
+                {
+                    self.dismissed_anti_keys.retain(|(k, _)| k != &key);
+                    self.dismissed_anti_keys.push((key, ts));
+                }
+                self.anti_expanded_key = None;
+                self.reschedule_next_anti_expire();
+                let next = self.collapsed_rest_mode();
+                self.apply_return_mode(next);
+            }
+            UiAction::SelectSecondaryAnti => {
+                if let Some(key) = self.anti_secondary_snapshot().map(|s| s.slot_key()) {
+                    self.cancel_compact_to_notch();
+                    self.clear_hud_state_quiet();
+                    self.anti_expanded_key = Some(key);
+                    self.requested_mode = IslandMode::AntiExpanded;
+                    if !self.mouse_tracked {
+                        self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+                    }
+                }
+            }
             UiAction::ToggleNotchCollapse => {
                 self.config.notch_collapse_after_4s = !self.config.notch_collapse_after_4s;
                 self.sync_mode_after_collapse_policy_change();
@@ -938,10 +1030,13 @@ impl WindowController {
             UiAction::ToggleAntiMonitor => {
                 self.config.anti_monitor_enabled = !self.config.anti_monitor_enabled;
                 if !self.config.anti_monitor_enabled {
-                    self.anti_banner_active = false;
                     self.cancel_anti_expire();
+                    self.anti_expanded_key = None;
+                    if self.requested_mode == IslandMode::AntiExpanded {
+                        self.requested_mode = self.collapsed_rest_mode();
+                    }
                 } else {
-                    self.foreground_is_anti = is_foreground_anti_app(self.hwnd);
+                    self.reschedule_next_anti_expire();
                 }
                 save_config(&self.config);
             }

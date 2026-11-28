@@ -491,8 +491,86 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #035 — Sửa nhận diện Anti độc lập đường dẫn, nâng cấp Anti HUD (`AntiExpanded`), icon âm thanh & HUD Bluetooth (`% pin`) / ngoại vi (`v0.3.5`)
+- **Thời gian thực hiện:** 2026-11-28T18:48:00+07:00
+- **Đặc tả & Kế hoạch:** [specs/device-hud-and-anti-fix/spec.md](specs/device-hud-and-anti-fix/spec.md), [specs/device-hud-and-anti-fix/plan.md](specs/device-hud-and-anti-fix/plan.md), [specs/device-hud-and-anti-fix/tasks.md](specs/device-hud-and-anti-fix/tasks.md).
+- **Phạm vi thay đổi:**
+  - [Cargo.toml](Cargo.toml) & [Cargo.lock](Cargo.lock): Nâng phiên bản lên `0.3.5`; bật thêm 3 feature Win32 gốc `Win32_Devices_Bluetooth`, `Win32_Devices_DeviceAndDriverInstallation`, `Win32_Devices_Properties` (0 crate ngoài).
+  - [src/anti.rs](src/anti.rs) & [src/watcher.rs](src/watcher.rs): Sửa lỗi nhận diện `Anti IDE` bị nhầm thành `Anti App` bằng phân loại 3 tầng độc lập đường dẫn cài đặt (biến môi trường phiên -> tên `.exe` cây tiến trình cha -> fallback + `.exe` đang chạy); ưu tiên đọc `toolSummary` + `summarize_command_hint` thay câu lệnh thô dài; lưu `recent_steps` (tối đa 3 bước); bổ sung `focus_anti_window` mở nhanh cửa sổ nguồn Anti tương ứng.
+  - [src/hud/device.rs](src/hud/device.rs) *(tạo mới)*, [src/hud/policy_config.rs](src/hud/policy_config.rs) & [src/hud/mod.rs](src/hud/mod.rs): Dùng `CM_Register_Notification` theo dõi PnP Bluetooth (`DEVPKEY_Device_IsConnected` + `DEVPKEY_Device_BatteryLevel` trên cùng `ContainerId`, kèm 1 nhịp đọc bù ~850ms khi kết nối mới), USB/lưu trữ/ngoại vi gộp theo `ContainerId` (debounce `950ms`) và kết hợp `IMMNotificationClient` cho tai nghe 3.5mm; phân loại `AudioOutputKind` (`Speaker`, `Headphones`, `Bluetooth`) qua `PKEY_AudioEndpoint_FormFactor` + `DEVPKEY_Device_EnumeratorName`.
+  - [src/state/](src/state/mod.rs), [src/config.rs](src/config.rs), [src/tray.rs](src/tray.rs), [src/renderer/](src/renderer/mod.rs) & [src/window/](src/window/mod.rs):
+    - Nới `Compact` lên `338 x 40 DIP` và gắn icon thiết bị âm thanh nhỏ ngay bên trái sóng nhạc (bấm mở nhanh `AudioDevices`), đồng bộ icon `Loa`/`Tai nghe`/`Bluetooth` trên `Volume HUD`, `Expanded` và `AudioDevices`.
+    - Bổ sung `HudContent::Device` (`2.6s`) hiển thị Bluetooth (`% pin` + viên pin mini), tai nghe, USB/ngoại vi khi kết nối hoặc ngắt kết nối; thêm công tắc `HUD Thiết bị` trong `Settings` (`424 x 436 DIP`, `MAX_SURFACE_HEIGHT_DIP = 460.0`) và menu Tray `Tùy chỉnh`.
+    - Bổ sung `IslandMode::AntiExpanded` (`424 x 154 DIP`) với nút `Mở cửa sổ`, `Ẩn nhanh`, `Cài đặt`, màu phân biệt nguồn Anti, thanh ánh sáng chạy nhịp ở đáy và viền nhấn vàng (`Đang chờ duyệt`) / đỏ + giữ `10 giây` (`Bị lỗi`).
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **52/52** (`win-dynamic-island`) + **1/1** (`win-dynamic-island-setup`) tests đạt (`0.45s` + `0.01s`).
+  - `cargo build --release --locked` & đóng gói `dist/`:
+    - [dist/win-dynamic-island.exe](dist/win-dynamic-island.exe): `1,072,640 bytes` (`VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`).
+    - [dist/WinDynamicIsland-Setup.exe](dist/WinDynamicIsland-Setup.exe): `1,559,552 bytes`.
+    - [dist/WinDynamicIsland-win64.zip](dist/WinDynamicIsland-win64.zip): `548,851 bytes`.
+  - Kiểm thử cài đặt đè trực tiếp `dist\WinDynamicIsland-Setup.exe /S` lên tiến trình cũ (`PID 6220`): `SETUP_EXIT=0`, khởi chạy tiến trình mới `PID 22368` tại `%LOCALAPPDATA%\Programs\WinDynamicIsland\win-dynamic-island.exe` (`VER=0.3.5.0`, `IL=0x2000` `Medium IL`, `WS_MB=48.8`, `PRIV_MB=19`, `HANDLES=426`, `NV_MODULES=0`, `EMOJI_HITS=0`), xác nhận `%LOCALAPPDATA%\WinDynamicIsland\anti-progress.json` cập nhật chuẩn `recent_steps` và `detail` từ `toolSummary`.
+
+## Bài học rút ra (`v0.3.5`)
+- **Nhận diện ứng dụng nguồn đa môi trường:** Đường dẫn thư mục cài đặt và thư mục dữ liệu chung (`.gemini/antigravity/`) có thể thay đổi theo máy và bản cập nhật migration; dùng chuỗi tiến trình cha đối chiếu tên `.exe` + biến môi trường phiên mới bảo đảm chính xác trên mọi máy.
+- **Theo dõi PnP và pin Bluetooth trên Windows 11:** `DEVPKEY_Device_BatteryLevel` thường nằm trên devnode con (`BTHHFENUM` hoặc `BTHLEDevice`) chứ không luôn nằm ở node chính, và có độ trễ ngắn sau khi kết nối; cần gom theo `ContainerId` và đọc bù 1 nhịp ~850ms sau `IsConnected = true` thay vì poll liên tục.
+
+---
+
+### Mục #036 — Theo dõi đồng thời `agy CLI` + `Antigravity IDE` và thêm UI viên phụ bên trái (`dual-anti-left-pill`)
+- **Thời gian thực hiện:** 2026-11-28T19:12:00+07:00
+- **Đặc tả & Kế hoạch:** [specs/dual-anti-left-pill/spec.md](specs/dual-anti-left-pill/spec.md), [specs/dual-anti-left-pill/plan.md](specs/dual-anti-left-pill/plan.md), [specs/dual-anti-left-pill/tasks.md](specs/dual-anti-left-pill/tasks.md).
+- **Nguyên nhân đã xác định:** `Antigravity IDE` (`lsVersion 2.36.0`) không nạp `hooks_manager.go` / `~/.gemini/config/hooks.json` như `agy CLI`; đồng thời `is_foreground_anti_app` ẩn sạch mọi thẻ Anti mỗi khi đứng trong cửa sổ `Antigravity IDE.exe` và bộ nhớ chỉ lưu 1 snapshot duy nhất.
+- **Phạm vi thay đổi:**
+  - [src/anti.rs](src/anti.rs): Bổ sung `read_transcript_tail_text` dùng chung (`128 KiB` cuối tệp), `parse_ide_transcript_tail` đọc trực tiếp `.gemini/antigravity/brain/<conv_id>/.system_generated/logs/transcript.jsonl`, lưu thêm tệp phiên `%LOCALAPPDATA%\WinDynamicIsland\anti-sessions\`, dùng `DirWatch` + `WaitForMultipleObjects` nghe song song Hook (`anti-progress.json` / `anti-sessions`) và IDE `transcript.jsonl` với `0% CPU` lúc chờ, quản lý đa slot xếp hạng `is_running -> updated_unix_ms`.
+  - [src/state/mod.rs](src/state/mod.rs) & [src/state/hitboxes.rs](src/state/hitboxes.rs): Thêm `UiAction::SelectSecondaryAnti` và `left_anti_pill_rect` (`232 x 40 DIP`, cách mép trái viên giữa `10 DIP`).
+  - [src/renderer/compositor.rs](src/renderer/compositor.rs), [src/renderer/mod.rs](src/renderer/mod.rs), [src/renderer/anti_view.rs](src/renderer/anti_view.rs) & [src/renderer/tests.rs](src/renderer/tests.rs): Thêm `left_anti_backdrop: Option<WinRtBackdropLayer>`, tách `draw_anti_compact_body` dùng chung, vẽ `draw_left_anti_surface` đồng pha trên `CompositionDrawingSurface`.
+  - [src/window/mod.rs](src/window/mod.rs), [src/window/modes.rs](src/window/modes.rs), [src/window/workers.rs](src/window/workers.rs), [src/window/input.rs](src/window/input.rs), [src/watcher.rs](src/watcher.rs) & [src/window/tests.rs](src/window/tests.rs): Gỡ chặn ẩn theo cửa sổ Anti foreground; quản lý `anti_slots`, `dismissed_anti_keys`, `anti_expanded_key`; hiển thị viên chính ở giữa và viên phụ bên trái; hợp vùng `left_anti_rgn` trong `SetWindowRgn` + `WM_NCHITTEST`; bấm viên trái bung `AntiExpanded` đúng phiên phụ đó và bổ sung kiểm thử bước #19.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked -- --nocapture`: **53/53** (`win-dynamic-island`) + **1/1** (`win-dynamic-island-setup`) tests đạt (`0.43s` + `0.01s`).
+  - `cargo build --release --locked` (App + Setup kèm `WDI_SETUP_PAYLOAD`):
+    - [dist/win-dynamic-island.exe](dist/win-dynamic-island.exe): `1,117,696 bytes` (`SHA256=813a839a988a95b4b97f1883bf31642dd9e042fd5abc7febbcfd46d6ace1d4c9`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`).
+    - [dist/WinDynamicIsland-Setup.exe](dist/WinDynamicIsland-Setup.exe): `1,604,608 bytes` (`SHA256=218b3e9874ac1e1f9c86b7ade0b8a9f8222718f972d4b3dd084a670d378c6a43`).
+    - [dist/WinDynamicIsland-win64.zip](dist/WinDynamicIsland-win64.zip): `571,738 bytes`.
+  - Cài đè trực tiếp `dist\WinDynamicIsland-Setup.exe /S`: `SETUP_EXIT=0`, tiến trình `PID 14376` chạy tại `%LOCALAPPDATA%\Programs\WinDynamicIsland\win-dynamic-island.exe` ở `Medium IL` (`0x2000`), `IDLE_CPU_2S_MS=0`, `WS_MB=48.59`, `PRIV_MB=19.35`, `HANDLES=428`, `NV_MODULES=0`, `EMOJI_HITS=0`, xác nhận tệp `anti-sessions\agy-cli-a4f2f26d-88a2-4fdf-8f6b-6392b9cd8f43.json` được tạo mới.
+
+### Mục #037 — Sửa lỗi bấm `Mở cửa sổ` trên `AntiExpanded` không bật được Terminal / IDE (`Lỗi #022`)
+- **Thời gian thực hiện:** 2026-11-28T19:15:30+07:00
+- **Nguyên nhân:** `agy.exe` chạy dưới cây cha `WindowsTerminal.exe -> powershell.exe -> agy.exe` có tiêu đề cửa sổ không chứa `"agy"`/`"antigravity"` nên `window_matches_anti_source` trả về `false`; đồng thời `find_anti_window_proc` chưa lọc cửa sổ helper nhỏ/rỗng tiêu đề và `focus_anti_window` chỉ gọi `SetForegroundWindow` dễ bị Foreground Lock chặn từ cửa sổ `WS_EX_NOACTIVATE`.
+- **Thay đổi:**
+  - [src/anti.rs](src/anti.rs): Thêm `collect_ancestor_pids_from_entries` và `collect_target_pids_for_source` lần ngược tối đa 6 cấp tiến trình cha (dừng tại tiến trình vỏ hệ thống như `explorer.exe`) kèm unit test cho chuỗi `WindowsTerminal.exe -> powershell.exe -> agy.exe`.
+  - [src/watcher.rs](src/watcher.rs): Lọc bỏ cửa sổ không tiêu đề hoặc kích thước `< 80x80` (khi chưa thu nhỏ), ưu tiên khớp thẳng PID trong `target_pids`, và gọi kết hợp `AllowSetForegroundWindow` -> `SetForegroundWindow` -> `AttachThreadInput` + `BringWindowToTop` -> `SwitchToThisWindow`.
+- **Kiểm chứng thực tế:** `cargo clippy --locked --all-targets -- -D warnings` sạch, `cargo test --locked` đạt **53/53** + **1/1** (`0.32s`), build lại bản release (`win-dynamic-island.exe` `1,122,816 bytes`, `WinDynamicIsland-Setup.exe` `1,609,728 bytes`), cài đè `WinDynamicIsland-Setup.exe /S` (`SETUP_EXIT=0`, `PID 7828`, `WS_MB=48.45`, `PRIV_MB=19.17`, `HANDLES=428`, `NV_MODULES=0`).
+
+### Mục #038 — Tự phục hồi tiến trình kẹt mất cửa sổ giữ Mutex (`Lỗi #023`)
+- **Thời gian thực hiện:** 2026-11-28T19:23:30+07:00
+- **Nguyên nhân:** Tiến trình `PID 7828` khởi chạy từ `WinDynamicIsland-Setup.exe /S` bên trong sandbox `exebox-*` tạo `HWND` trên Desktop ẩn nên không hiện trên Desktop `Default`, nhưng vẫn giữ `Local\WinDynamicIslandSingleInstanceMutex` khiến người dùng mở lại app từ Desktop thật bị thoát im lặng khi `FindWindowW` trả `0`.
+- **Thay đổi:**
+  - [src/main.rs](src/main.rs): Chuyển `wake_existing_instance()` trả về `bool`; bổ sung `acquire_or_recover_instance()` chờ ngắn (`6 x 150 ms`) khi không thấy `HWND` trên Desktop hiện tại rồi gọi `install::stop_running_instance_and_wait()` để thu hồi tiến trình kẹt mất cửa sổ và ghi `startup.log`.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt (`0` cảnh báo).
+  - `cargo test --locked`: **53/53** + **1/1** tests đạt (`0.32s` + `0.01s`).
+  - `cargo build --release --locked` & đóng gói `dist/`: `win-dynamic-island.exe` (`1,123,328 bytes`), `WinDynamicIsland-Setup.exe` (`1,610,240 bytes`), `WinDynamicIsland-win64.zip` (`573,846 bytes`).
+  - Tiến trình `PID 14080` của người dùng đang chạy trên Desktop `Default` với `DEFAULT_DESK_WND_COUNT=2`, `ANY_VISIBLE=True`.
+
+### Mục #039 — Chặn nhận nhầm `agy.exe --hub` của `Antigravity IDE` khi bấm `Mở cửa sổ` của `agy CLI` (`Lỗi #024`)
+- **Thời gian thực hiện:** 2026-11-28T19:26:00+07:00
+- **Nguyên nhân:** `Antigravity IDE.exe` (`PID 21204 -> 3444`) sinh tiến trình language-server `C:\Users\ASUS\.gemini\bin\agy.exe --hub` (`PID 8008`). Hàm `collect_ancestor_pids_from_entries` trước đó quét mọi tiến trình tên `agy.exe` rồi lần ngược cây cha của nó, nên gom nhầm luôn `PID 21204` (`Antigravity IDE.exe`) vào `target_pids` của `AntiSource::AgyCli`.
+- **Thay đổi:**
+  - [src/anti.rs](src/anti.rs): Trong `collect_ancestor_pids_from_entries`, loại bỏ toàn bộ nhánh cây cha nếu gặp tiến trình cha thuộc `AntiSource` khác (`owned_by_other_anti`), và bổ sung test cho cây `Antigravity IDE.exe (21204) -> Antigravity IDE.exe (3444) -> agy.exe (8008)`.
+  - [src/watcher.rs](src/watcher.rs): Bỏ qua tường minh mọi `HWND` thuộc `AntiIde` / `AntiApp` trong `find_anti_window_proc` khi đang tìm cửa sổ cho `AntiSource::AgyCli`.
+- **Kiểm chứng thực tế:** `cargo clippy --locked --all-targets -- -D warnings` sạch, `cargo test --locked` đạt **53/53** + **1/1** (`0.33s` + `0.01s`), đóng gói `dist/` (`win-dynamic-island.exe` `1,123,328 bytes`, `WinDynamicIsland-Setup.exe` `1,610,240 bytes`, `WinDynamicIsland-win64.zip` `573,958 bytes`).
+
+## Bài học rút ra (`dual-anti-left-pill`)
+- **Không phụ thuộc một kênh hook duy nhất cho mọi client:** Cùng hệ sinh thái nhưng `agy CLI` kích hoạt `hooks.json` còn `Antigravity IDE` ghi `transcript.jsonl` trực tiếp không gọi `hooks_manager`; `ReadDirectoryChangesW` đa handle (`WaitForMultipleObjects`) giải quyết triệt để mà vẫn giữ `0% CPU` lúc chờ.
+- **Khớp cửa sổ theo cây PID cha thay vì đoán tiêu đề:** Terminal chứa `agy CLI` thường giữ tiêu đề PowerShell/tên thư mục; tra cây tiến trình cha + lọc `HWND` có kích thước/tiêu đề hợp lệ và kết hợp `AttachThreadInput`/`SwitchToThisWindow` bảo đảm đưa đúng cửa sổ lên trước.
+- **Không khởi chạy GUI đích từ trong sandbox desktop `exebox-*` và luôn có cơ chế tự thu hồi Mutex kẹt:** Không chạy `Setup.exe /S` tự mở GUI từ môi trường sandbox desktop ẩn để giữ nguyên phiên Desktop `Default` của người dùng; đồng thời kiểm tra `FindWindowW` trong `main.rs` để tự thu hồi tiến trình bị kẹt không có cửa sổ.
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn tất phiên bản **`v0.3.4`** với bộ Icon chính thức, cơ chế Startup tin cậy ở `Medium IL`, menu khay hệ thống thu gọn và hai gói phân phối song song trong `dist/` (**Setup** `WinDynamicIsland-Setup.exe` và **Portable** `WinDynamicIsland-win64.zip` / `win-dynamic-island.exe`). Tiến trình `win-dynamic-island.exe` (`PID 21528`) đang chạy ổn định từ thư mục cài đặt `%LOCALAPPDATA%\Programs\WinDynamicIsland\` ở mức `0x2000` (`Medium IL`).
+- **Trạng thái hiện tại:** Đã hoàn tất nâng cấp theo dõi đa Anti (`agy CLI` + `Antigravity IDE`) với viên chính ở giữa và viên phụ bên trái (`specs/dual-anti-left-pill/`), sửa lỗi bấm `Mở cửa sổ` (`Lỗi #022`) và tự phục hồi Mutex kẹt (`Lỗi #023`). Tiến trình `PID 14080` đang hiển thị trực tiếp trên Desktop `Default` của người dùng (`ANY_VISIBLE=True`); bản cài đặt tại `%LOCALAPPDATA%\Programs\WinDynamicIsland\win-dynamic-island.exe` là bản `1,122,816 bytes`, còn gói `dist/` chứa bản mới nhất `1,123,328 bytes` (đã thêm `acquire_or_recover_instance`).
 - **Lưu ý cho phiên tiếp theo:**
-  - Nếu biên dịch `WinDynamicIsland-Setup.exe` từ mã nguồn, cần build `win-dynamic-island` release trước và truyền đường dẫn qua biến môi trường `WDI_SETUP_PAYLOAD` (theo đúng cấu hình trong [.github/workflows/release.yml](.github/workflows/release.yml)).
-  - Khi muốn phát hành bản `v0.3.4` lên GitHub Releases, chỉ cần commit và đẩy tag `v0.3.4` lên `origin`.
+  - Thư mục `target/` đang chứa kết quả build mới nhất; gói `dist/` đã đồng bộ đủ Portable, Setup và SHA-256.
+  - Toàn bộ thay đổi từ `v0.3.5` và `dual-anti-left-pill` chưa được commit/push lên `origin` nếu người dùng muốn phát hành thẻ mới trên GitHub.

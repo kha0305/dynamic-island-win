@@ -5,39 +5,90 @@ impl WindowController {
         select_monitor_or_default(&self.monitors, self.config.monitor_index)
     }
 
+    pub(super) fn visible_anti_slots(&self) -> Vec<&AntiProgressSnapshot> {
+        if !self.config.anti_monitor_enabled {
+            return Vec::new();
+        }
+        let now = now_unix_ms();
+        let active_expanded_key = (self.requested_mode == IslandMode::AntiExpanded)
+            .then_some(self.anti_expanded_key.as_deref())
+            .flatten();
+        self.anti_slots
+            .iter()
+            .filter(|snap| {
+                if snap.is_stale(now) {
+                    return false;
+                }
+                let key = snap.slot_key();
+                if self
+                    .dismissed_anti_keys
+                    .iter()
+                    .any(|(k, ts)| k == &key && snap.updated_unix_ms <= *ts)
+                {
+                    return false;
+                }
+                if !snap.state.is_running() && active_expanded_key != Some(key.as_str()) {
+                    let limit = if snap.state == AntiAgentState::Error {
+                        ANTI_ERROR_DISPLAY_MS as u64
+                    } else {
+                        ANTI_TERMINAL_DISPLAY_MS as u64
+                    };
+                    if now.saturating_sub(snap.updated_unix_ms) > limit {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
     pub(super) fn anti_display_snapshot(&self) -> Option<&AntiProgressSnapshot> {
-        if !self.config.anti_monitor_enabled || !self.anti_banner_active || self.foreground_is_anti
+        let slots = self.visible_anti_slots();
+        if slots.is_empty() {
+            return None;
+        }
+        if self.requested_mode == IslandMode::AntiExpanded
+            && let Some(target_key) = self.anti_expanded_key.as_deref()
+            && let Some(found) = slots.iter().find(|s| s.slot_key() == target_key)
+        {
+            return Some(*found);
+        }
+        Some(slots[0])
+    }
+
+    pub(super) fn anti_secondary_snapshot(&self) -> Option<&AntiProgressSnapshot> {
+        let slots = self.visible_anti_slots();
+        if slots.len() < 2 {
+            return None;
+        }
+        let primary_key = self.anti_display_snapshot().map(|s| s.slot_key());
+        slots
+            .into_iter()
+            .find(|s| primary_key.as_deref() != Some(s.slot_key().as_str()))
+    }
+
+    pub(super) fn active_left_anti_rect(&self, pill: PillRectDip) -> Option<PillRectDip> {
+        if !self.config.visible || self.fullscreen_active || self.anti_secondary_snapshot().is_none()
         {
             return None;
         }
-        let snap = self.anti_snapshot.as_ref()?;
-        if snap.is_stale(now_unix_ms()) {
-            return None;
-        }
-        Some(snap)
+        left_anti_pill_rect(pill, self.current_effective_mode())
     }
 
     pub(super) fn is_anti_spinner_active(&self) -> bool {
-        self.active_hud.is_none()
+        let primary_spin = self.active_hud.is_none()
             && self.anti_display_snapshot().is_some_and(|s| s.state.is_running())
             && matches!(
                 self.current_effective_mode(),
-                IslandMode::Compact | IslandMode::Slim
-            )
-    }
-
-    pub(super) fn refresh_anti_foreground_state(&mut self) {
-        let next = if self.config.anti_monitor_enabled {
-            is_foreground_anti_app(self.hwnd)
-        } else {
-            false
-        };
-        if next != self.foreground_is_anti {
-            self.foreground_is_anti = next;
-            if self.anti_banner_active && self.anti_snapshot.is_some() {
-                self.apply_target_and_render();
-            }
-        }
+                IslandMode::Compact | IslandMode::Slim | IslandMode::AntiExpanded
+            );
+        let secondary_spin = self
+            .anti_secondary_snapshot()
+            .is_some_and(|s| s.state.is_running())
+            && self
+                .active_left_anti_rect(self.animator.current_pill())
+                .is_some();
+        primary_spin || secondary_spin
     }
 
     pub(super) fn current_effective_mode(&self) -> IslandMode {
@@ -343,8 +394,16 @@ impl WindowController {
         };
         let mon_label = self.active_monitor().short_label.clone();
         let notice_view = self.active_notice.as_ref().map(ActiveNotice::as_view);
-        let anti_snap = if matches!(display_mode, IslandMode::Compact | IslandMode::Slim) {
+        let anti_snap = if matches!(
+            display_mode,
+            IslandMode::Compact | IslandMode::Slim | IslandMode::AntiExpanded
+        ) {
             self.anti_display_snapshot().cloned()
+        } else {
+            None
+        };
+        let anti_secondary = if self.active_left_anti_rect(pill).is_some() {
+            self.anti_secondary_snapshot().cloned()
         } else {
             None
         };
@@ -391,6 +450,8 @@ impl WindowController {
             audio_device_scroll: self.audio_device_scroll,
             volume_snapshot: self.volume_snapshot,
             current_audio_device_name: self.current_audio_device_name.as_deref(),
+            current_audio_device_kind: self.current_audio_device_kind,
+            hud_device_name: self.hud_device_name.as_deref(),
             notice: if display_mode == IslandMode::Notice {
                 notice_view
             } else {
@@ -401,6 +462,7 @@ impl WindowController {
                 .as_ref()
                 .map(|r| r.version_tag.as_str()),
             anti: anti_snap.as_ref(),
+            anti_secondary: anti_secondary.as_ref(),
             anti_hooks_installed: self.anti_hooks_installed,
             anti_spinner_phase: self.anti_spinner_phase,
             shelf: shelf_view,
@@ -416,6 +478,9 @@ impl WindowController {
         let shelf_rgn = self
             .active_shelf_rect(pill)
             .map(|sr| compute_pill_region_px(sr, self.dpi_scale));
+        let left_anti_rgn = self
+            .active_left_anti_rect(pill)
+            .map(|lr| compute_pill_region_px(lr, self.dpi_scale));
         let bridge_rgn = self
             .active_drag_bridge_rect(pill)
             .map(|br| compute_pill_region_px(br, self.dpi_scale).0);
@@ -425,8 +490,9 @@ impl WindowController {
                 return;
             }
             let cur_rgn = compute_pill_region_px(pill, self.dpi_scale);
-            let shelf_unchanged =
-                self.last_shelf_region == shelf_rgn && self.last_bridge_region == bridge_rgn;
+            let extras_unchanged = self.last_shelf_region == shelf_rgn
+                && self.last_left_anti_region == left_anti_rgn
+                && self.last_bridge_region == bridge_rgn;
             let already_covers_rect = self.last_region.is_some_and(|(prev, diam)| {
                 diam == 0
                     && prev.left <= cur_rgn.0.left
@@ -434,7 +500,7 @@ impl WindowController {
                     && prev.right >= cur_rgn.0.right
                     && prev.bottom >= cur_rgn.0.bottom
             });
-            if already_covers_rect && shelf_unchanged {
+            if already_covers_rect && extras_unchanged {
                 return;
             }
             let (tw, th, _, _) =
@@ -453,14 +519,15 @@ impl WindowController {
                 corner_radius: 1.0,
             };
             let (rect, _) = compute_pill_region_px(union_pill, self.dpi_scale);
-            self.apply_combined_regions((rect, 0), shelf_rgn, bridge_rgn);
+            self.apply_combined_regions((rect, 0), shelf_rgn, left_anti_rgn, bridge_rgn);
         } else {
             let exact = compute_pill_region_px(pill, self.dpi_scale);
             if self.last_region != Some(exact)
                 || self.last_shelf_region != shelf_rgn
+                || self.last_left_anti_region != left_anti_rgn
                 || self.last_bridge_region != bridge_rgn
             {
-                self.apply_combined_regions(exact, shelf_rgn, bridge_rgn);
+                self.apply_combined_regions(exact, shelf_rgn, left_anti_rgn, bridge_rgn);
             }
         }
     }
@@ -469,6 +536,7 @@ impl WindowController {
         &mut self,
         primary: (PixelRect, i32),
         secondary: Option<(PixelRect, i32)>,
+        left_anti: Option<(PixelRect, i32)>,
         bridge: Option<PixelRect>,
     ) {
         let make_hrgn = |(rect, diameter): (PixelRect, i32)| -> HRGN {
@@ -492,7 +560,10 @@ impl WindowController {
         if rgn_main.is_invalid() {
             return;
         }
-        for extra in [secondary, bridge.map(|r| (r, 0))].into_iter().flatten() {
+        for extra in [secondary, left_anti, bridge.map(|r| (r, 0))]
+            .into_iter()
+            .flatten()
+        {
             let rgn_extra = make_hrgn(extra);
             if !rgn_extra.is_invalid() {
                 unsafe {
@@ -508,6 +579,7 @@ impl WindowController {
         } else {
             self.last_region = Some(primary);
             self.last_shelf_region = secondary;
+            self.last_left_anti_region = left_anti;
             self.last_bridge_region = bridge;
         }
     }
@@ -515,6 +587,7 @@ impl WindowController {
     pub(super) fn apply_empty_region(&mut self) {
         self.last_region = None;
         self.last_shelf_region = None;
+        self.last_left_anti_region = None;
         self.last_bridge_region = None;
         let rgn = unsafe { CreateRectRgn(0, 0, 0, 0) };
         if !rgn.is_invalid() && unsafe { SetWindowRgn(self.hwnd, Some(rgn), false) } == 0 {
@@ -588,7 +661,10 @@ impl WindowController {
         if !self.mouse_tracked
             && !self.dragging_timeline
             && !self.is_shelf_drag_active()
-            && self.requested_mode == IslandMode::Expanded
+            && matches!(
+                self.requested_mode,
+                IslandMode::Expanded | IslandMode::AntiExpanded
+            )
         {
             self.requested_mode = if self.should_collapse_to_slim() {
                 IslandMode::Slim
@@ -622,6 +698,13 @@ impl WindowController {
     pub(super) fn normalized_subview_return_mode(&self, saved: IslandMode) -> IslandMode {
         match saved {
             IslandMode::Expanded => IslandMode::Expanded,
+            IslandMode::AntiExpanded => {
+                if self.anti_display_snapshot().is_some() {
+                    IslandMode::AntiExpanded
+                } else {
+                    self.collapsed_rest_mode()
+                }
+            }
             IslandMode::Settings => IslandMode::Settings,
             _ => self.collapsed_rest_mode(),
         }
@@ -629,7 +712,7 @@ impl WindowController {
 
     pub(super) fn apply_return_mode(&mut self, next: IslandMode) {
         self.requested_mode = next;
-        if next == IslandMode::Expanded && !self.mouse_tracked {
+        if matches!(next, IslandMode::Expanded | IslandMode::AntiExpanded) && !self.mouse_tracked {
             self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
         } else if next == IslandMode::Compact
             && !self.mouse_tracked

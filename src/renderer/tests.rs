@@ -80,11 +80,19 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         AudioOutputDevice {
             id: String::from("dev-1"),
             name: String::from("Speakers (Realtek Audio)"),
+            kind: AudioOutputKind::Speaker,
             is_default: true,
         },
         AudioOutputDevice {
             id: String::from("dev-2"),
             name: String::from("Headphones (USB DAC)"),
+            kind: AudioOutputKind::Headphones,
+            is_default: false,
+        },
+        AudioOutputDevice {
+            id: String::from("dev-3"),
+            name: String::from("Diamond Stereo"),
+            kind: AudioOutputKind::Bluetooth,
             is_default: false,
         },
     ];
@@ -97,6 +105,7 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         IslandMode::Slim,
         IslandMode::Compact,
         IslandMode::Expanded,
+        IslandMode::AntiExpanded,
         IslandMode::Settings,
         IslandMode::AudioDevices,
         IslandMode::Notice,
@@ -131,10 +140,13 @@ fn winrt_glass_backdrop_initializes_and_renders() {
             audio_device_scroll: 0,
             volume_snapshot: vol_snap,
             current_audio_device_name: Some("Speakers (Realtek Audio)"),
+            current_audio_device_kind: AudioOutputKind::Speaker,
+            hud_device_name: None,
             notice: sample_notice,
             available_update_tag: Some("v0.2.2"),
             anti: None,
-            anti_hooks_installed: false,
+        anti_secondary: None,
+        anti_hooks_installed: false,
             anti_spinner_phase: 0.0,
             shelf: ShelfRenderInput::default(),
         };
@@ -163,6 +175,8 @@ fn winrt_glass_backdrop_initializes_and_renders() {
             audio_device_scroll: 0,
             volume_snapshot: vol_snap,
             current_audio_device_name: None,
+            current_audio_device_kind: AudioOutputKind::Speaker,
+            hud_device_name: None,
             notice: Some(IslandNoticeView {
                 kind,
                 title: "Kiểm tra thông báo",
@@ -172,7 +186,8 @@ fn winrt_glass_backdrop_initializes_and_renders() {
             }),
             available_update_tag: None,
             anti: None,
-            anti_hooks_installed: false,
+        anti_secondary: None,
+        anti_hooks_installed: false,
             anti_spinner_phase: 0.0,
             shelf: ShelfRenderInput::default(),
         };
@@ -214,9 +229,12 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         audio_device_scroll: 0,
         volume_snapshot: vol_snap,
         current_audio_device_name: Some("Speakers (Realtek Audio)"),
+        current_audio_device_kind: AudioOutputKind::Bluetooth,
+        hud_device_name: None,
         notice: None,
         available_update_tag: None,
         anti: None,
+        anti_secondary: None,
         anti_hooks_installed: false,
         anti_spinner_phase: 0.0,
         shelf: ShelfRenderInput::default(),
@@ -241,9 +259,12 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         audio_device_scroll: 0,
         volume_snapshot: vol_snap,
         current_audio_device_name: Some("Speakers (Realtek Audio)"),
+        current_audio_device_kind: AudioOutputKind::Bluetooth,
+        hud_device_name: None,
         notice: None,
         available_update_tag: None,
         anti: None,
+        anti_secondary: None,
         anti_hooks_installed: false,
         anti_spinner_phase: 0.0,
         shelf: ShelfRenderInput::default(),
@@ -277,9 +298,12 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         audio_device_scroll: 0,
         volume_snapshot: vol_snap,
         current_audio_device_name: Some("Speakers (Realtek Audio)"),
+        current_audio_device_kind: AudioOutputKind::Bluetooth,
+        hud_device_name: None,
         notice: None,
         available_update_tag: None,
         anti: None,
+        anti_secondary: None,
         anti_hooks_installed: false,
         anti_spinner_phase: 0.0,
         shelf: ShelfRenderInput::default(),
@@ -313,9 +337,12 @@ fn winrt_glass_backdrop_initializes_and_renders() {
         audio_device_scroll: 0,
         volume_snapshot: vol_snap,
         current_audio_device_name: Some("Speakers (Realtek Audio)"),
+        current_audio_device_kind: AudioOutputKind::Bluetooth,
+        hud_device_name: None,
         notice: None,
         available_update_tag: None,
         anti: None,
+        anti_secondary: None,
         anti_hooks_installed: false,
         anti_spinner_phase: 0.0,
         shelf: ShelfRenderInput::default(),
@@ -349,6 +376,16 @@ fn winrt_glass_backdrop_initializes_and_renders() {
             percent: Some(12),
             low_battery: true,
         },
+        HudContent::Device {
+            category: DeviceHudCategory::Bluetooth,
+            connected: true,
+            battery_percent: Some(85),
+        },
+        HudContent::Device {
+            category: DeviceHudCategory::Usb,
+            connected: false,
+            battery_percent: None,
+        },
     ] {
         let hud_input = RenderFrameInput {
             pill: IslandAnimator::new(IslandMode::Compact).current_pill(),
@@ -367,10 +404,13 @@ fn winrt_glass_backdrop_initializes_and_renders() {
             audio_device_scroll: 0,
             volume_snapshot: vol_snap,
             current_audio_device_name: Some("Headphones (USB DAC)"),
+            current_audio_device_kind: AudioOutputKind::Headphones,
+            hud_device_name: Some("Diamond Stereo"),
             notice: None,
             available_update_tag: None,
             anti: None,
-            anti_hooks_installed: false,
+        anti_secondary: None,
+        anti_hooks_installed: false,
             anti_spinner_phase: 0.0,
             shelf: ShelfRenderInput::default(),
         };
@@ -516,9 +556,12 @@ fn smoked_glass_preserves_translucency_and_contrast_over_white() {
         audio_device_scroll: 0,
         volume_snapshot: VolumeSnapshot::default(),
         current_audio_device_name: None,
+        current_audio_device_kind: AudioOutputKind::Speaker,
+        hud_device_name: None,
         notice: None,
         available_update_tag: None,
         anti: None,
+        anti_secondary: None,
         anti_hooks_installed: false,
         anti_spinner_phase: 0.0,
         shelf: ShelfRenderInput::default(),
@@ -542,7 +585,7 @@ fn smoked_glass_preserves_translucency_and_contrast_over_white() {
         off_ctx.SetDpi(96.0, 96.0);
         off_ctx.SetTransform(&canvas.base_transform());
         off_ctx.Clear(Some(&clear));
-        renderer.draw_pill_shell(canvas, pill, 1.0, true, false);
+        renderer.draw_pill_shell(canvas, pill, 1.0, true, false, None);
         renderer.draw_clipped_contents(canvas, &input, 1.0);
         off_ctx.EndDraw(None, None).expect("EndDraw");
     }
@@ -684,8 +727,12 @@ fn file_shelf_and_anti_spinner_render_cleanly_offscreen() {
     let media = MediaDisplayState::default();
     let anti = crate::anti::AntiProgressSnapshot {
         state: crate::anti::AntiAgentState::Coding,
-        source: crate::anti::AntiSource::AgyCli,
-        detail: String::from("Đang ghép File Shelf"),
+        source: crate::anti::AntiSource::AntiIde,
+        detail: String::from("Sửa anti_view.rs"),
+        recent_steps: vec![
+            String::from("Đang code: Sửa anti_view.rs"),
+            String::from("Đang phân tích: Kiểm tra cấu trúc"),
+        ],
         conversation_id: String::new(),
         had_error: false,
         updated_unix_ms: 0,
@@ -729,10 +776,13 @@ fn file_shelf_and_anti_spinner_render_cleanly_offscreen() {
             audio_device_scroll: 0,
             volume_snapshot: VolumeSnapshot::default(),
             current_audio_device_name: None,
+            current_audio_device_kind: AudioOutputKind::Speaker,
+            hud_device_name: None,
             notice: None,
             available_update_tag: Some("v0.3.0"),
             anti: Some(&anti),
-            anti_hooks_installed: true,
+        anti_secondary: None,
+        anti_hooks_installed: true,
             anti_spinner_phase: 1.75,
             shelf: ShelfRenderInput {
                 visible: true,
@@ -744,6 +794,37 @@ fn file_shelf_and_anti_spinner_render_cleanly_offscreen() {
         };
         renderer.render(&input).expect("render Anti + Shelf");
     }
+
+    let anti_exp_input = RenderFrameInput {
+        pill: IslandAnimator::new(IslandMode::AntiExpanded).current_pill(),
+        mode: IslandMode::AntiExpanded,
+        pill_opacity: 1.0,
+        content_alpha: 1.0,
+        config: AppConfig::default(),
+        media: &media,
+        active_hud: None,
+        volume_scrub_ratio: None,
+        hovered_action: Some(UiAction::FocusAntiWindow),
+        timeline_scrub_ratio: None,
+        monitor_label: "1 - Chính",
+        visualizer_phase: 0.0,
+        audio_devices: &[],
+        audio_device_scroll: 0,
+        volume_snapshot: VolumeSnapshot::default(),
+        current_audio_device_name: None,
+        current_audio_device_kind: AudioOutputKind::Speaker,
+        hud_device_name: None,
+        notice: None,
+        available_update_tag: None,
+        anti: Some(&anti),
+        anti_secondary: None,
+        anti_hooks_installed: true,
+        anti_spinner_phase: 1.75,
+        shelf: ShelfRenderInput::default(),
+    };
+    renderer
+        .render(&anti_exp_input)
+        .expect("render AntiExpanded");
 
     renderer.hide_backdrop();
     drop(renderer);
