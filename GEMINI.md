@@ -55,6 +55,7 @@
   - Không đọc/poll nặng trên luồng UI chính (UI thread); mọi tác vụ lắng nghe GSMTC Media, theo dõi phần cứng hoặc kéo thả tệp phải chạy bất đồng bộ qua kênh truyền tin an toàn (mpsc / channel) và chỉ đánh thức vẽ lại khi trạng thái thật sự thay đổi.
   - Không dùng `unwrap()` / `expect()` bừa bãi trên luồng chạy chính với dữ liệu từ hệ điều hành (tên bài hát, ảnh bìa rỗng, thiết bị ngắt kết nối đột ngột).
   - Với cửa sổ WinRT Glass dùng `SpriteVisual`, mọi nội dung Direct2D phải render qua `CompositionDrawingSurface` để commit đồng pha với lớp kính mờ, và chỉ cắt `CreateRoundRectRgn` sau khi hoạt ảnh dừng hẳn.
+  - Với cửa sổ `WS_EX_NOREDIRECTIONBITMAP` nhận kéo thả OLE (`RegisterDragDrop`), phải xử lý `WM_NCHITTEST` tường minh (`HTCLIENT` / `HTTRANSPARENT`), không giữ `&mut` tới trạng thái cửa sổ khi gọi `ReleaseCapture()` hoặc vòng lặp modal `DoDragDrop`, và chỉ dùng `DROPEFFECT_COPY` cho khay tệp tạm.
 - **Kiểm soát dung lượng build:** Tuân thủ `.gitignore`, không giữ file tạm; nếu tạm dừng phát triển dài ngày nên dọn `target/` (giữ lại tệp `.exe` bản release nếu cần) để tránh phình ổ cứng.
 
 ---

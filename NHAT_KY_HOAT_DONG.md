@@ -401,6 +401,34 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #029 — Sửa lỗi kéo thả tệp hai chiều `File Shelf` trên Windows 11 (Lỗi #015)
+- **Thời gian thực hiện:** 2026-11-28T13:20:00+07:00
+- **Phạm vi thay đổi:**
+  - [src/shelf.rs](src/shelf.rs): Cải tiến `IslandDropTarget` chọn `DROPEFFECT` theo đúng bitmask đầu vào (`pick_drop_effect`), sửa `ShelfDataObject::EnumFormatEtc` chỉ trả format cho `DATADIR_GET` (chấp nhận `lindex == 0 | -1`), đổi `start_shelf_drag_out` sang chỉ dùng `DROPEFFECT_COPY` (tránh Explorer di chuyển mất tệp gốc) và bổ sung kiểm thử `IDropTarget::DragEnter` / `Drop` + `DATADIR_GET`/`SET`.
+  - [src/window/mod.rs](src/window/mod.rs), [src/window/input.rs](src/window/input.rs), [src/window/workers.rs](src/window/workers.rs), [src/window/modes.rs](src/window/modes.rs): Bổ sung `WM_NCHITTEST` (`handle_nchittest` trả `HTCLIENT`/`HTTRANSPARENT`), mở bộ lọc thông điệp `ChangeWindowMessageFilterEx` (`WM_DROPFILES`, `WM_COPYGLOBALDATA`, `WM_COPYDATA`) kèm `DragAcceptFiles` + `WM_DROPFILES` fallback, tự bung `Khay tệp` khi kéo tệp tới (`shelf_auto_opened_by_drag`) và tách `ReleaseCapture()` + `start_shelf_drag_out()` ra ngoài borrow `&mut WindowController` trong `WM_MOUSEMOVE`; ghi nhận trạng thái fallback trên tooltip Tray nếu `RegisterDragDrop` lỗi.
+  - [src/window/tests.rs](src/window/tests.rs): Bổ sung kịch bản bước #15 kiểm tra `WM_NCHITTEST`, tự mở/đóng `Khay tệp` khi `WM_APP_SHELF_HOVER`, và kiểm tra `handle_mouse_move` trả đường dẫn kéo ra ngoài borrow.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **44/44** tests đạt (`0.34s`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`843,264 bytes`**, `SHA256=df17da6fa2f053060ead0348bdb8db7784d12da00641ea4ea01abc1aa77bc5df`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `NV_MODULES=0`, `WS_MB=54.11`, `PRIV_MB=24.45`, `HANDLES=563`).
+  - Người dùng đã kiểm thử thực tế trên màn hình Desktop FHD với File Explorer (`PID 22488`): kéo thả thành công 2 tệp (`README.md`, `NHAT_KY_HOAT_DONG.md`) vào `Khay tệp (2)`.
+
+---
+
+### Mục #030 — Bấm thanh tiêu đề thu gọn nhanh `Khay tệp` & `Cài đặt` và đưa bản vá lên Git
+- **Thời gian thực hiện:** 2026-11-28T13:27:30+07:00
+- **Phạm vi thay đổi:**
+  - [src/state/hitboxes.rs](src/state/hitboxes.rs) & [src/state/mod.rs](src/state/mod.rs): Tách `is_compact_click` dùng chung; thêm `should_collapse_shelf_on_header_click` (`y < rect.top + 34.0`) cho `Khay tệp` và `should_close_subview_on_header_click` (`y < pill.top + 38.0`) cho bảng `Cài đặt` (`Settings`) / `Thiết bị phát âm thanh` (`AudioDevices`), vẫn giữ nguyên nút `"Thu gọn"` và `"Quay lại"` cùng cơ chế chặn đóng nhầm khi bấm khe nút bên dưới.
+  - [src/window/input.rs](src/window/input.rs) & [src/window/mod.rs](src/window/mod.rs): Thêm `hovered_header` và `is_pointer_over_collapsible_header` đổi con trỏ bàn tay (`IDC_HAND`) khi rê lên thanh tiêu đề; xử lý bấm gọn thanh tiêu đề trong `handle_left_button_up` để thu gọn `Khay tệp` hoặc quay lại ngay từ `Settings` / `AudioDevices`.
+  - [src/window/tests.rs](src/window/tests.rs): Bổ sung kịch bản bước #16 kiểm chứng bấm thanh tiêu đề `Khay tệp` và `Cài đặt` thu gọn/quay lại nhanh.
+  - [GEMINI.md](GEMINI.md): Bổ sung quy tắc kéo thả OLE trên cửa sổ `WS_EX_NOREDIRECTIONBITMAP` vào Mục 5 theo duyệt của người dùng.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **44/44** tests đạt (`0.27s`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`845,312 bytes`**, `SHA256=1ce00d14bb285db71120dc6955cd19e078bfc6561728b33151913f26b78770f1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`).
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
 - **Trạng thái hiện tại:** Đã hoàn tất 3 chặng, kiểm thử sạch, đóng gói và phát hành **v0.3.0** lên GitHub (`tag v0.3.0`, `841,728 bytes`), đồng bộ gói Portable `dist/`, dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định.
 - **Lưu ý cho phiên tiếp theo:**

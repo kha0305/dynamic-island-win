@@ -24,17 +24,20 @@ use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
+use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW,
-    DestroyWindow, GWLP_USERDATA, GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, HCURSOR,
-    IDC_ARROW, IDC_HAND, IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MA_NOACTIVATE,
+    CS_HREDRAW, CS_VREDRAW, ChangeWindowMessageFilterEx, CreateWindowExW,
+    DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetCursorPos,
+    GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND,
+    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MA_NOACTIVATE, MSGFLT_ALLOW,
     PBT_APMPOWERSTATUSCHANGE, PBT_POWERSETTINGCHANGE, PostQuitMessage, RegisterClassExW, SM_CXDRAG,
     SM_CYDRAG, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW, WM_APP, WM_CAPTURECHANGED,
-    WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_POWERBROADCAST,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WindowFromPoint,
+    WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
+    WM_NCHITTEST, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WindowFromPoint,
 };
 use windows::core::PCWSTR;
 
@@ -51,8 +54,8 @@ use crate::hud::{
 use crate::media::{MediaCommand, MediaWorker, WM_APP_MEDIA_UPDATE};
 use crate::renderer::{IslandRenderer, RenderFrameInput, ShelfRenderInput};
 use crate::shelf::{
-    IslandDropTarget, ShelfState, WM_APP_SHELF_DROP, WM_APP_SHELF_HOVER, load_shelf_state,
-    save_shelf_state, start_shelf_drag_out,
+    IslandDropTarget, ShelfState, WM_APP_SHELF_DROP, WM_APP_SHELF_HOVER, extract_hdrop_paths,
+    load_shelf_state, save_shelf_state, start_shelf_drag_out,
 };
 use crate::state::{
     AppConfig, HudContent, IslandAnimator, IslandMode, IslandNoticeView,
@@ -62,8 +65,10 @@ use crate::state::{
     compute_window_origin_px, current_windows_filetime_ticks, effective_mode,
     fill_audio_devices_hitboxes, fill_interactive_hitboxes, fill_notice_hitboxes,
     fill_shelf_hitboxes, fill_volume_hud_hitboxes, pill_contains_dip, shelf_contains_dip,
-    shelf_pill_rect, should_collapse_expanded_on_blank_click, target_dimensions_for_state,
-    target_top_for_mode, timeline_ratio_for_x, timeline_seek_hit_bounds, volume_seek_hit_bounds,
+    shelf_pill_rect, should_close_subview_on_header_click,
+    should_collapse_expanded_on_blank_click, should_collapse_shelf_on_header_click,
+    target_dimensions_for_state, target_top_for_mode, timeline_ratio_for_x,
+    timeline_seek_hit_bounds, volume_seek_hit_bounds,
 };
 use crate::tray::{
     IDM_AUDIO_DEVICE_BASE, IDM_AUDIO_DEVICE_MAX, IDM_CHECK_UPDATE, IDM_EXIT, IDM_MONITOR_BASE,
@@ -108,7 +113,7 @@ const MK_RBUTTON_MASK: usize = 0x0002;
 const MK_SHIFT_MASK: usize = 0x0004;
 const MK_CONTROL_MASK: usize = 0x0008;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureChange {
     None,
     Acquire,
@@ -171,6 +176,7 @@ struct WindowController {
     pressed_action: Option<UiAction>,
     seek_hold_until: Option<Instant>,
     hovered_action: Option<UiAction>,
+    hovered_header: bool,
     dpi_scale: f32,
     animator: IslandAnimator,
     renderer: IslandRenderer,
@@ -207,6 +213,7 @@ struct WindowController {
     shelf: ShelfState,
     shelf_drop_rx: Receiver<Vec<PathBuf>>,
     drop_target_registered: bool,
+    shelf_auto_opened_by_drag: bool,
     shelf_drag_candidate: Option<(usize, f32, f32)>,
 }
 
@@ -298,6 +305,16 @@ impl IslandWindow {
         let (shelf_drop_tx, shelf_drop_rx) = std::sync::mpsc::channel();
         let drop_target: IDropTarget = IslandDropTarget::new(hwnd, shelf_drop_tx).into();
         let drop_target_registered = unsafe { RegisterDragDrop(hwnd, &drop_target) }.is_ok();
+        unsafe {
+            const WM_COPYGLOBALDATA: u32 = 0x0049;
+            const WM_COPYDATA_MSG: u32 = 0x004A;
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_DROPFILES, MSGFLT_ALLOW, None);
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYGLOBALDATA, MSGFLT_ALLOW, None);
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA_MSG, MSGFLT_ALLOW, None);
+            if !drop_target_registered {
+                DragAcceptFiles(hwnd, true);
+            }
+        }
 
         let power_tracker = PowerStateTracker::default();
         let power_notify_handle = unsafe {
@@ -339,6 +356,7 @@ impl IslandWindow {
             pressed_action: None,
             seek_hold_until: None,
             hovered_action: None,
+            hovered_header: false,
             dpi_scale: active_mon.dpi_scale,
             animator: IslandAnimator::new(initial_mode),
             renderer,
@@ -375,6 +393,7 @@ impl IslandWindow {
             shelf,
             shelf_drop_rx,
             drop_target_registered,
+            shelf_auto_opened_by_drag: false,
             shelf_drag_candidate: None,
         });
 
@@ -593,12 +612,28 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_NCHITTEST => {
+            if let Some(ctrl) = get_controller_mut(hwnd) {
+                return LRESULT(ctrl.handle_nchittest(lparam));
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
+        WM_DROPFILES => {
+            let hdrop = HDROP(wparam.0 as *mut core::ffi::c_void);
+            let paths = unsafe { extract_hdrop_paths(hdrop) };
+            unsafe { DragFinish(hdrop) };
+            if let Some(ctrl) = get_controller_mut(hwnd) {
+                ctrl.handle_shelf_drop_paths(paths);
+            }
+            LRESULT(0)
+        }
         WM_SETCURSOR => {
             if let Some(ctrl) = get_controller_mut(hwnd) {
                 let cursor = if ctrl.dragging_timeline
                     || ctrl.dragging_volume
                     || ctrl.shelf_drag_candidate.is_some()
                     || ctrl.hovered_action.is_some()
+                    || ctrl.hovered_header
                 {
                     ctrl.cursor_hand
                 } else {
@@ -620,8 +655,17 @@ unsafe extern "system" fn window_proc(
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_MOUSEMOVE => {
-            if let Some(ctrl) = get_controller_mut(hwnd) {
-                ctrl.handle_mouse_move(lparam);
+            let drag_out_paths =
+                get_controller_mut(hwnd).and_then(|ctrl| ctrl.handle_mouse_move(lparam));
+            if let Some(paths) = drag_out_paths {
+                // Giải phóng capture và chạy vòng lặp modal DoDragDrop ngoài borrow `&mut WindowController`.
+                unsafe {
+                    let _ = ReleaseCapture();
+                }
+                start_shelf_drag_out(&paths);
+                if let Some(ctrl) = get_controller_mut(hwnd) {
+                    ctrl.finish_shelf_drag_out();
+                }
             }
             LRESULT(0)
         }

@@ -187,6 +187,7 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             pressed_action: None,
             seek_hold_until: None,
             hovered_action: None,
+            hovered_header: false,
             dpi_scale: 1.0,
             animator: IslandAnimator::new(IslandMode::Slim),
             renderer,
@@ -227,6 +228,7 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             shelf: ShelfState::default(),
             shelf_drop_rx: std::sync::mpsc::channel().1,
             drop_target_registered: false,
+            shelf_auto_opened_by_drag: false,
             shelf_drag_candidate: None,
         });
         unsafe {
@@ -680,6 +682,104 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             }
             assert!(f1.exists());
             assert!(f2.exists());
+
+            // 15. Kiểm tra WM_NCHITTEST, tự mở khay khi kéo tới (WM_APP_SHELF_HOVER) và tách kéo ra khỏi &mut borrow.
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.shelf.open = false;
+                ctrl.shelf_auto_opened_by_drag = false;
+            }
+            unsafe {
+                window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(1), LPARAM(0));
+            }
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                assert!(ctrl.shelf.open, "Keo tep toi phai tu mo Khay tep");
+                assert!(ctrl.shelf_auto_opened_by_drag);
+            }
+            unsafe {
+                window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(0), LPARAM(0));
+            }
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                assert!(!ctrl.shelf.open, "Roi chuot khi chua tha phai tu thu gon lai");
+                assert!(!ctrl.shelf_auto_opened_by_drag);
+            }
+
+            let compact_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
+            let in_pt = pill_to_screen(compact_pill.left + 40.0, compact_pill.top + 14.0);
+            let gap_pt = pill_to_screen(compact_pill.left + compact_pill.width + 5.0, compact_pill.top + 14.0);
+            let nc_in = unsafe {
+                window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(in_pt.x, in_pt.y))
+            };
+            let nc_gap = unsafe {
+                window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(gap_pt.x, gap_pt.y))
+            };
+            assert_eq!(nc_in.0, HTCLIENT as isize);
+            assert_eq!(nc_gap.0, HTTRANSPARENT as isize);
+
+            // Mở khay với 1 tệp và xác nhận handle_mouse_move trả về đường dẫn kéo ra ngoài borrow.
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.shelf.open = true;
+            }
+            let s_open = shelf_pill_rect(compact_pill, IslandMode::Compact, true, 1).unwrap();
+            let mut open_hbs = Vec::new();
+            fill_shelf_hitboxes(s_open, true, 1, 0, 0, &mut open_hbs);
+            let drag_row = open_hbs
+                .iter()
+                .find(|hb| matches!(hb.action, UiAction::ShelfDragItem(0)))
+                .unwrap()
+                .rect;
+            let dx = (drag_row.left + drag_row.width() * 0.5).round() as i32;
+            let dy = (drag_row.top + drag_row.height() * 0.5).round() as i32;
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                assert_eq!(
+                    ctrl.handle_left_button_down(make_lparam_xy(dx, dy)),
+                    CaptureChange::Acquire
+                );
+                let dragged = ctrl.handle_mouse_move(make_lparam_xy(dx + 24, dy));
+                assert_eq!(dragged, Some(vec![f1.clone()]));
+                assert!(ctrl.shelf_drag_candidate.is_none());
+            }
+
+            // 16. Bấm thanh tiêu đề phía trên của Khay tệp và Cài đặt để thu gọn/quay lại nhanh (vẫn giữ nút gốc).
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.shelf.open = true;
+                ctrl.requested_mode = IslandMode::Compact;
+                ctrl.animator = IslandAnimator::new(IslandMode::Compact);
+            }
+            let hdr_x = (s_open.left + 44.0).round() as i32;
+            let hdr_y = (s_open.top + 16.0).round() as i32;
+            unsafe {
+                window_proc(hwnd, WM_LBUTTONDOWN, WPARAM(1), make_lparam_xy(hdr_x, hdr_y));
+                window_proc(hwnd, WM_LBUTTONUP, WPARAM(0), make_lparam_xy(hdr_x, hdr_y));
+            }
+            assert!(
+                !get_controller_mut(hwnd).unwrap().shelf.open,
+                "Bam thanh tieu de Khay tep phai thu gon nhanh"
+            );
+
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.requested_mode = IslandMode::Compact;
+                ctrl.execute_ui_action(UiAction::OpenSettings);
+                ctrl.animator = IslandAnimator::new(IslandMode::Settings);
+            }
+            let st_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
+            let st_hdr_x = (st_pill.left + 90.0).round() as i32;
+            let st_hdr_y = (st_pill.top + 18.0).round() as i32;
+            unsafe {
+                window_proc(hwnd, WM_LBUTTONDOWN, WPARAM(1), make_lparam_xy(st_hdr_x, st_hdr_y));
+                window_proc(hwnd, WM_LBUTTONUP, WPARAM(0), make_lparam_xy(st_hdr_x, st_hdr_y));
+            }
+            assert_eq!(
+                get_controller_mut(hwnd).unwrap().current_effective_mode(),
+                IslandMode::Compact,
+                "Bam thanh tieu de Cai dat phai quay lai nhanh"
+            );
 
             let _ = std::fs::remove_file(&f1);
             let _ = std::fs::remove_file(&f2);

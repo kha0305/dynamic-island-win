@@ -512,10 +512,16 @@ impl WindowController {
                 None if self.update_in_progress => String::from(" - Đang kiểm tra cập nhật"),
                 None => String::new(),
             };
+            let drop_tag = if self.drop_target_registered {
+                ""
+            } else {
+                " - Kéo thả: Fallback"
+            };
             let msg = format!(
-                "Win Dynamic Island - {}{} ({}{})",
+                "Win Dynamic Island - {}{}{} ({}{})",
                 status,
                 update_tag,
+                drop_tag,
                 glass_tag,
                 self.renderer.adapter_name()
             );

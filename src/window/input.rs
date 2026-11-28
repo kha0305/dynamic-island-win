@@ -7,6 +7,7 @@ impl WindowController {
             || self.shelf_drag_candidate.is_some();
         self.mouse_tracked = false;
         self.hovered_action = None;
+        self.hovered_header = false;
         self.pressed_action = None;
         self.pointer_down_pos = None;
         self.dragging_timeline = false;
@@ -60,6 +61,47 @@ impl WindowController {
         let px_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
         let scale = self.dpi_scale.max(0.5);
         (px_x / scale, px_y / scale)
+    }
+
+    pub(super) fn handle_nchittest(&self, lparam: LPARAM) -> isize {
+        if self.animator.should_hide_window() {
+            return HTTRANSPARENT as isize;
+        }
+        let mut pt = POINT {
+            x: (lparam.0 & 0xFFFF) as i16 as i32,
+            y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+        };
+        if !unsafe { ScreenToClient(self.hwnd, &mut pt) }.as_bool() {
+            return HTTRANSPARENT as isize;
+        }
+        let scale = self.dpi_scale.max(0.5);
+        let x_dip = pt.x as f32 / scale;
+        let y_dip = pt.y as f32 / scale;
+        let pill = self.animator.current_pill();
+        let over_pill = pill_contains_dip(pill, x_dip, y_dip, 2.0);
+        let over_shelf = self
+            .active_shelf_rect(pill)
+            .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0));
+        if over_pill || over_shelf {
+            HTCLIENT as isize
+        } else {
+            HTTRANSPARENT as isize
+        }
+    }
+
+    pub(super) fn is_pointer_over_collapsible_header(&self, x_dip: f32, y_dip: f32) -> bool {
+        let pill = self.animator.current_pill();
+        if self.shelf.open
+            && self.active_shelf_rect(pill).is_some_and(|sr| {
+                should_collapse_shelf_on_header_click(sr, (x_dip, y_dip), (x_dip, y_dip))
+            })
+        {
+            return true;
+        }
+        matches!(
+            self.requested_mode,
+            IslandMode::Settings | IslandMode::AudioDevices
+        ) && should_close_subview_on_header_click(pill, (x_dip, y_dip), (x_dip, y_dip))
     }
 
     pub(super) fn hit_test_action(&mut self, x_dip: f32, y_dip: f32) -> Option<UiAction> {
@@ -324,7 +366,7 @@ impl WindowController {
         CaptureChange::None
     }
 
-    pub(super) fn handle_mouse_move(&mut self, lparam: LPARAM) {
+    pub(super) fn handle_mouse_move(&mut self, lparam: LPARAM) -> Option<Vec<PathBuf>> {
         self.cancel_auto_collapse();
         self.cancel_compact_to_notch();
         self.cancel_notice_expire();
@@ -338,18 +380,15 @@ impl WindowController {
                 self.shelf_drag_candidate = None;
                 self.pressed_action = None;
                 self.pointer_down_pos = None;
-                unsafe {
-                    let _ = ReleaseCapture();
-                }
-                let paths = self.shelf.drag_paths_for(idx);
-                if !paths.is_empty() {
-                    start_shelf_drag_out(&paths);
-                }
                 self.mouse_tracked = false;
                 self.hovered_action = None;
+                let paths = self.shelf.drag_paths_for(idx);
+                if !paths.is_empty() {
+                    return Some(paths);
+                }
                 self.render_current_frame();
             }
-            return;
+            return None;
         }
 
         if self.dragging_volume {
@@ -369,7 +408,7 @@ impl WindowController {
                     self.request_smooth_render();
                 }
             }
-            return;
+            return None;
         }
 
         if self.dragging_timeline {
@@ -384,7 +423,7 @@ impl WindowController {
                     self.request_smooth_render();
                 }
             }
-            return;
+            return None;
         }
 
         let pill = self.animator.current_pill();
@@ -395,7 +434,7 @@ impl WindowController {
             && !pill_contains_dip(pill, x_dip, y_dip, 2.0)
             && !over_shelf
         {
-            return;
+            return None;
         }
 
         self.ensure_mouse_tracked();
@@ -408,15 +447,19 @@ impl WindowController {
         }
 
         let next_hover = self.hit_test_action(x_dip, y_dip);
-        if next_hover != self.hovered_action {
+        let next_header_hover =
+            next_hover.is_none() && self.is_pointer_over_collapsible_header(x_dip, y_dip);
+        if next_hover != self.hovered_action || next_header_hover != self.hovered_header {
+            let action_changed = next_hover != self.hovered_action;
             self.hovered_action = next_hover;
+            self.hovered_header = next_header_hover;
             if matches!(
                 next_hover,
                 Some(UiAction::ToggleVolumeMute | UiAction::SeekVolume)
             ) {
                 self.schedule_hud_expire();
             }
-            let cursor = if next_hover.is_some() {
+            let cursor = if next_hover.is_some() || next_header_hover {
                 self.cursor_hand
             } else {
                 self.cursor_arrow
@@ -424,10 +467,22 @@ impl WindowController {
             unsafe {
                 SetCursor(Some(cursor));
             }
-            if !self.animator.is_animating() {
+            if action_changed && !self.animator.is_animating() {
                 self.render_current_frame();
             }
         }
+        None
+    }
+
+    pub(super) fn finish_shelf_drag_out(&mut self) {
+        self.shelf_drag_candidate = None;
+        self.pressed_action = None;
+        self.pointer_down_pos = None;
+        self.mouse_tracked = false;
+        self.hovered_action = None;
+        self.hovered_header = false;
+        self.sync_pointer_presence();
+        self.render_current_frame();
     }
 
     pub(super) fn handle_mouse_leave(&mut self) {
@@ -436,6 +491,7 @@ impl WindowController {
         }
         self.mouse_tracked = false;
         self.wheel_accum.reset();
+        self.hovered_header = false;
         let hover_changed = self.hovered_action.take().is_some();
         if self.active_hud.is_some() {
             self.schedule_hud_expire();
@@ -606,6 +662,21 @@ impl WindowController {
         }
 
         let pill = self.animator.current_pill();
+        let click_down = down_pos.unwrap_or((x_dip, y_dip));
+        if self.shelf.open
+            && let Some(s_rect) = self.active_shelf_rect(pill)
+            && shelf_contains_dip(s_rect, x_dip, y_dip, 2.0)
+        {
+            if should_collapse_shelf_on_header_click(s_rect, click_down, (x_dip, y_dip)) {
+                self.shelf_auto_opened_by_drag = false;
+                self.shelf.open = false;
+                self.hovered_action = None;
+                self.hovered_header = false;
+                self.apply_target_and_render();
+            }
+            return (CaptureChange::None, false);
+        }
+
         if !pill_contains_dip(pill, x_dip, y_dip, 2.0) {
             return (CaptureChange::None, false);
         }
@@ -617,18 +688,21 @@ impl WindowController {
 
         if matches!(
             self.requested_mode,
-            IslandMode::Settings | IslandMode::AudioDevices | IslandMode::Notice
+            IslandMode::Settings | IslandMode::AudioDevices
         ) {
-            // Không tự đóng bảng Cài đặt / Thiết bị âm thanh / Thông báo khi bấm trượt khoảng trống.
+            if should_close_subview_on_header_click(pill, click_down, (x_dip, y_dip)) {
+                self.hovered_header = false;
+                self.execute_ui_action(UiAction::BackToMedia);
+            }
+            return (CaptureChange::None, false);
+        }
+
+        if self.requested_mode == IslandMode::Notice {
             return (CaptureChange::None, false);
         }
 
         if self.requested_mode == IslandMode::Expanded
-            && !should_collapse_expanded_on_blank_click(
-                pill,
-                down_pos.unwrap_or((x_dip, y_dip)),
-                (x_dip, y_dip),
-            )
+            && !should_collapse_expanded_on_blank_click(pill, click_down, (x_dip, y_dip))
         {
             return (CaptureChange::None, false);
         }
@@ -905,9 +979,11 @@ impl WindowController {
                 return;
             }
             UiAction::ToggleShelf => {
+                self.shelf_auto_opened_by_drag = false;
                 self.shelf.open = !self.shelf.open;
             }
             UiAction::ShelfClose => {
+                self.shelf_auto_opened_by_drag = false;
                 self.shelf.open = false;
             }
             UiAction::ShelfToggleSelect(idx) => {

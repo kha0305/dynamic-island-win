@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **44/44** `cargo test`, `cargo build --release` (`v0.3.0`, `841,728 bytes`, `SHA256=ffccb1d82a71111f4479575e09415ab6593154f991ff46cb84a06d1f92321646`, `VCRUNTIME_DEP=False`, `NV_MODULES=0`, `IDLE_CPU_2S_MS=0`) và chụp ảnh kiểm chứng trên màn hình FHD thật.
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **44/44** `cargo test --locked`, `cargo build --release --locked` (`v0.3.0`, `845,312 bytes`, `SHA256=1ce00d14bb285db71120dc6955cd19e078bfc6561728b33151913f26b78770f1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`) và kiểm chứng kéo thả tệp thật từ File Explorer vào `Khay tệp` trên màn hình FHD.
 
 ---
 
@@ -120,3 +120,11 @@
 - **Nguyên nhân gốc rễ:** Trong `src/window.rs`, `IslandWindow::create` luôn gán `requested_mode = IslandMode::Slim`; hàm `collapsed_rest_mode()` và các điểm chuyển cảnh (`handle_media_update`, `clear_hud`, `handle_mouse_leave`, `handle_compact_to_notch_timer`, `handle_auto_collapse_timer`, `ToggleNotchCollapse`, `IDM_TOGGLE_EXPANDED`) ép về `Slim` mỗi khi `!self.media_state.has_session` mà không kiểm tra `!self.config.notch_collapse_after_4s`; riêng `ToggleNotchCollapse` khi tắt từ `Slim` không cập nhật `settings_return_mode`.
 - **Cách sửa:** Hợp nhất chính sách vào `WindowController::should_collapse_to_slim()` (`notch_collapse_after_4s || (auto_hide_when_idle && !media_state.has_session)`), cập nhật `collapsed_rest_mode()`, `IslandWindow::create`, toàn bộ nhánh chuyển đổi trong `src/window.rs`, thêm `sync_mode_after_collapse_policy_change()` cho `ToggleNotchCollapse` và `ToggleAutoHideIdle`, đồng thời bổ sung kịch bản kiểm thử bước #13.
 - **Cách phòng tránh:** Gom mọi điều kiện chuyển về chế độ thu gọn (`Slim`) vào một hàm chính sách duy nhất (`should_collapse_to_slim`) và viết test tích hợp cho cả hai cực cấu hình (`notch_collapse_after_4s = true` và `false`) khi không có session media.
+
+### Lỗi #015: Kéo thả tệp từ Explorer vào Dynamic Island / Khay tệp không hoạt động và lỗi reentrancy `DoDragDrop`
+- **Hiện tượng lỗi:** Khi kéo tệp từ File Explorer đưa qua Dynamic Island lẫn nút `Khay tệp` đều không nhận thả tệp; chiều kéo ra gọi `ReleaseCapture()` và `DoDragDrop` ngay bên trong `WM_MOUSEMOVE`.
+- **Nguyên nhân gốc rễ:**
+  - Cửa sổ `WS_EX_NOREDIRECTIONBITMAP` gắn `CreateDesktopWindowTarget` chưa xử lý `WM_NCHITTEST` tường minh (`HTCLIENT` / `HTTRANSPARENT`), chưa mở `ChangeWindowMessageFilterEx` / `DragAcceptFiles` fallback, không tự mở `Khay tệp` khi `DragEnter` đi qua nút nhỏ `88 x 28 DIP`, và `IslandDropTarget` chưa giao bitmask `DROPEFFECT` từ nguồn kéo.
+  - Ở chiều kéo ra, `src/window/input.rs` gọi `ReleaseCapture()` và `start_shelf_drag_out()` (`DoDragDrop`) ngay khi `window_proc` (`WM_MOUSEMOVE`) đang giữ `&mut WindowController`, gây reentrancy mượn `&mut` chồng chéo; `DoDragDrop` còn truyền `DROPEFFECT_MOVE` và `ShelfDataObject::EnumFormatEtc` bỏ qua `DATADIR_GET`.
+- **Cách sửa:** Bổ sung `handle_nchittest` (`HTCLIENT`/`HTTRANSPARENT`) và `WM_DROPFILES` + `ChangeWindowMessageFilterEx` tại `src/window/mod.rs` và `src/window/input.rs`; tự mở/thu `Khay tệp` khi `DragEnter`/`DragLeave` tại `src/window/workers.rs`; giao đúng `DROPEFFECT` trong `IslandDropTarget`, lọc `DATADIR_GET` và chỉ truyền `DROPEFFECT_COPY` trong `src/shelf.rs`; và đưa `ReleaseCapture()` + `start_shelf_drag_out()` ra ngoài scope `&mut WindowController` trong `WM_MOUSEMOVE`.
+- **Cách phòng tránh:** Với mọi cửa sổ `WS_EX_NOREDIRECTIONBITMAP` dùng `RegisterDragDrop`, luôn xử lý `WM_NCHITTEST` tường minh (`HTCLIENT`/`HTTRANSPARENT`), không bao giờ gọi `ReleaseCapture()` hoặc vòng lặp modal `DoDragDrop` khi đang giữ `&mut` tới `WindowController`, và không dùng `DROPEFFECT_MOVE` cho khay tệp tạm.

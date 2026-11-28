@@ -13,15 +13,15 @@ use windows::Win32::Foundation::{
     POINT, POINTL, S_FALSE, S_OK, TRUE, WPARAM,
 };
 use windows::Win32::System::Com::{
-    DVASPECT_CONTENT, FORMATETC, IAdviseSink, IDataObject, IDataObject_Impl, IEnumFORMATETC,
-    IEnumFORMATETC_Impl, IEnumSTATDATA, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
+    DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IDataObject, IDataObject_Impl,
+    IEnumFORMATETC, IEnumFORMATETC_Impl, IEnumSTATDATA, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock,
 };
 use windows::Win32::System::Ole::{
-    CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE, DoDragDrop,
-    IDropSource, IDropSource_Impl, IDropTarget, IDropTarget_Impl, ReleaseStgMedium,
+    CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE,
+    DoDragDrop, IDropSource, IDropSource_Impl, IDropTarget, IDropTarget_Impl, ReleaseStgMedium,
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::{DROPFILES, DragQueryFileW, HDROP};
@@ -332,7 +332,7 @@ fn build_dropfiles_hglobal(paths: &[PathBuf]) -> WinResult<HGLOBAL> {
 pub struct IslandDropTarget {
     hwnd_raw: isize,
     drop_tx: Sender<Vec<PathBuf>>,
-    can_accept: Cell<bool>,
+    accepted_effect: Cell<DROPEFFECT>,
 }
 
 impl IslandDropTarget {
@@ -340,7 +340,7 @@ impl IslandDropTarget {
         Self {
             hwnd_raw: hwnd.0 as isize,
             drop_tx,
-            can_accept: Cell::new(false),
+            accepted_effect: Cell::new(DROPEFFECT_NONE),
         }
     }
 
@@ -358,6 +358,23 @@ impl IslandDropTarget {
             );
         }
     }
+
+    fn pick_drop_effect(allowed_ptr: *mut DROPEFFECT) -> DROPEFFECT {
+        let allowed = if allowed_ptr.is_null() {
+            DROPEFFECT_COPY
+        } else {
+            unsafe { *allowed_ptr }
+        };
+        if (allowed.0 & DROPEFFECT_COPY.0) != 0 || allowed == DROPEFFECT_NONE {
+            DROPEFFECT_COPY
+        } else if (allowed.0 & DROPEFFECT_LINK.0) != 0 {
+            DROPEFFECT_LINK
+        } else if (allowed.0 & DROPEFFECT_MOVE.0) != 0 {
+            DROPEFFECT_MOVE
+        } else {
+            DROPEFFECT_COPY
+        }
+    }
 }
 
 impl IDropTarget_Impl for IslandDropTarget_Impl {
@@ -372,14 +389,15 @@ impl IDropTarget_Impl for IslandDropTarget_Impl {
         let accepted = pdataobj
             .as_ref()
             .is_some_and(|obj| unsafe { obj.QueryGetData(&fmt) }.is_ok());
-        self.can_accept.set(accepted);
+        let effect = if accepted {
+            IslandDropTarget::pick_drop_effect(pdweffect)
+        } else {
+            DROPEFFECT_NONE
+        };
+        self.accepted_effect.set(effect);
         if !pdweffect.is_null() {
             unsafe {
-                *pdweffect = if accepted {
-                    DROPEFFECT_COPY
-                } else {
-                    DROPEFFECT_NONE
-                };
+                *pdweffect = effect;
             }
         }
         self.post_hover(accepted);
@@ -392,20 +410,22 @@ impl IDropTarget_Impl for IslandDropTarget_Impl {
         _pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> WinResult<()> {
+        let cached = self.accepted_effect.get();
+        let effect = if cached != DROPEFFECT_NONE {
+            IslandDropTarget::pick_drop_effect(pdweffect)
+        } else {
+            DROPEFFECT_NONE
+        };
         if !pdweffect.is_null() {
             unsafe {
-                *pdweffect = if self.can_accept.get() {
-                    DROPEFFECT_COPY
-                } else {
-                    DROPEFFECT_NONE
-                };
+                *pdweffect = effect;
             }
         }
         Ok(())
     }
 
     fn DragLeave(&self) -> WinResult<()> {
-        self.can_accept.set(false);
+        self.accepted_effect.set(DROPEFFECT_NONE);
         self.post_hover(false);
         Ok(())
     }
@@ -417,7 +437,8 @@ impl IDropTarget_Impl for IslandDropTarget_Impl {
         _pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> WinResult<()> {
-        self.can_accept.set(false);
+        let drop_effect = IslandDropTarget::pick_drop_effect(pdweffect);
+        self.accepted_effect.set(DROPEFFECT_NONE);
         self.post_hover(false);
 
         let Some(obj) = pdataobj.as_ref() else {
@@ -451,7 +472,7 @@ impl IDropTarget_Impl for IslandDropTarget_Impl {
                 let _ = PostMessageW(Some(self.hwnd()), WM_APP_SHELF_DROP, WPARAM(0), LPARAM(0));
             }
             if !pdweffect.is_null() {
-                unsafe { *pdweffect = DROPEFFECT_COPY };
+                unsafe { *pdweffect = drop_effect };
             }
         } else if !pdweffect.is_null() {
             unsafe { *pdweffect = DROPEFFECT_NONE };
@@ -530,6 +551,7 @@ impl ShelfDataObject {
         f.cfFormat == CF_HDROP.0
             && (f.tymed & (TYMED_HGLOBAL.0 as u32)) != 0
             && (f.dwAspect == DVASPECT_CONTENT.0 || f.dwAspect == 0)
+            && (f.lindex == -1 || f.lindex == 0)
     }
 }
 
@@ -581,7 +603,10 @@ impl IDataObject_Impl for ShelfDataObject_Impl {
         Err(windows::core::Error::from(E_NOTIMPL))
     }
 
-    fn EnumFormatEtc(&self, _dwdirection: u32) -> WinResult<IEnumFORMATETC> {
+    fn EnumFormatEtc(&self, dwdirection: u32) -> WinResult<IEnumFORMATETC> {
+        if dwdirection != DATADIR_GET.0 as u32 {
+            return Err(windows::core::Error::from(E_NOTIMPL));
+        }
         Ok(ShelfFormatEnum {
             formats: vec![hdrop_accept_format()],
             index: Cell::new(0),
@@ -638,14 +663,7 @@ pub fn start_shelf_drag_out(paths: &[PathBuf]) -> bool {
     let data_obj: IDataObject = ShelfDataObject { paths: valid }.into();
     let drop_src: IDropSource = ShelfDropSource.into();
     let mut effect = DROPEFFECT_NONE;
-    let hr = unsafe {
-        DoDragDrop(
-            &data_obj,
-            &drop_src,
-            DROPEFFECT_COPY | DROPEFFECT_MOVE,
-            &mut effect,
-        )
-    };
+    let hr = unsafe { DoDragDrop(&data_obj, &drop_src, DROPEFFECT_COPY, &mut effect) };
     hr == DRAGDROP_S_DROP
 }
 
@@ -723,6 +741,38 @@ mod tests {
         unsafe { ReleaseStgMedium(&mut medium) };
 
         assert_eq!(extracted, vec![p1.clone(), p2.clone()]);
+
+        // Kiểm tra EnumFormatEtc chỉ trả về cho DATADIR_GET (1), từ chối DATADIR_SET (2).
+        assert!(unsafe { data_obj.EnumFormatEtc(DATADIR_GET.0 as u32) }.is_ok());
+        assert!(unsafe { data_obj.EnumFormatEtc(2) }.is_err());
+
+        // Kiểm tra IslandDropTarget::DragEnter + Drop nhận đúng đường dẫn và giữ bitmask effect.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let drop_target: IDropTarget = IslandDropTarget::new(HWND::default(), tx).into();
+        let mut eff = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+        unsafe {
+            drop_target
+                .DragEnter(
+                    &data_obj,
+                    MODIFIERKEYS_FLAGS(MK_LBUTTON.0),
+                    POINTL { x: 100, y: 20 },
+                    &mut eff,
+                )
+                .expect("DragEnter must succeed");
+        }
+        assert_eq!(eff, DROPEFFECT_COPY);
+        unsafe {
+            drop_target
+                .Drop(
+                    &data_obj,
+                    MODIFIERKEYS_FLAGS(0),
+                    POINTL { x: 100, y: 20 },
+                    &mut eff,
+                )
+                .expect("Drop must succeed");
+        }
+        assert_eq!(eff, DROPEFFECT_COPY);
+        assert_eq!(rx.try_recv().unwrap(), vec![p1.clone(), p2.clone()]);
 
         let _ = fs::remove_file(&p1);
         let _ = fs::remove_file(&p2);

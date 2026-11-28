@@ -691,18 +691,38 @@ impl WindowController {
     }
 
     pub(super) fn handle_shelf_drag_hover(&mut self, active: bool) {
-        if self.shelf.drag_hover != active {
-            self.shelf.drag_hover = active;
+        let mut changed = self.shelf.drag_hover != active;
+        self.shelf.drag_hover = active;
+        if active {
+            if !self.shelf.open {
+                self.shelf.open = true;
+                self.shelf_auto_opened_by_drag = true;
+                changed = true;
+            }
+        } else if self.shelf_auto_opened_by_drag {
+            self.shelf_auto_opened_by_drag = false;
+            if self.shelf.open {
+                self.shelf.open = false;
+                changed = true;
+            }
+        }
+        if changed {
             self.render_current_frame();
         }
     }
 
     pub(super) fn handle_shelf_drop(&mut self) {
-        let mut added_total = 0_usize;
-        while let Ok(paths) = self.shelf_drop_rx.try_recv() {
-            added_total += self.shelf.add_paths(&paths);
+        let mut all_paths = Vec::new();
+        while let Ok(mut paths) = self.shelf_drop_rx.try_recv() {
+            all_paths.append(&mut paths);
         }
+        self.handle_shelf_drop_paths(all_paths);
+    }
+
+    pub(super) fn handle_shelf_drop_paths(&mut self, paths: Vec<PathBuf>) {
+        let added_total = self.shelf.add_paths(&paths);
         self.shelf.drag_hover = false;
+        self.shelf_auto_opened_by_drag = false;
         if added_total > 0 {
             save_shelf_state(&self.shelf);
             self.config.visible = true;

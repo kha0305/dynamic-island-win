@@ -27,11 +27,11 @@
 | Thành phần | Đường dẫn | Trạng thái | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | Luật riêng dự án | `GEMINI.md` | HOÀN TẤT | Kế thừa `global_rules.md` + ràng buộc Win32/Rust |
-| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#028 gồm 3 chặng `v0.3.0` (`Tối ưu module`, `Theo dõi Anti`, `File Shelf`) và dọn `target/` |
-| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.0` và ghi nhận Lỗi #001–#014 |
+| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#030 gồm `v0.3.0`, bản vá kéo thả `File Shelf` (#029) và thu gọn nhanh theo thanh tiêu đề (#030) |
+| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.0` và ghi nhận Lỗi #001–#015 |
 | Đặc tả tính năng | `specs/v03-shelf-anti-refactor/spec.md` (kế thừa `specs/dynamic-island/`..`ui-polish-v021/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ `v0.3.0` |
 | Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT v0.3.0 | Đã hoàn thành toàn bộ `T1.1–T1.6`, `T2.1–T2.5`, `T3.1–T3.4` của `v0.3.0` |
-| Mã nguồn & CI/CD | `Cargo.toml`, `.cargo/config.toml`, `src/**/*.rs`, `.github/workflows/release.yml` | ĐÃ SẴN SÀNG v0.3.0 | `clippy --locked` sạch, `44/44` tests đạt (`0.57s`), `.exe` dung lượng `841,728 bytes`; dọn `target/`, bản chạy nền nằm tại `dist\win-dynamic-island.exe` |
+| Mã nguồn & CI/CD | `Cargo.toml`, `.cargo/config.toml`, `src/**/*.rs`, `.github/workflows/release.yml` | ĐÃ SẴN SÀNG v0.3.0 | `clippy --locked` sạch, `44/44` tests đạt (`0.27s`), `.exe` dung lượng `845,312 bytes`; đã đẩy bản vá lên `origin/main` |
 
 ---
 

@@ -213,19 +213,55 @@ pub fn timeline_ratio_for_x(track: UiRectDip, x_dip: f32) -> f32 {
     ((x_dip - track.left) / width).clamp(0.0, 1.0)
 }
 
+fn is_compact_click(down_pos: (f32, f32), up_pos: (f32, f32)) -> bool {
+    let dx = up_pos.0 - down_pos.0;
+    let dy = up_pos.1 - down_pos.1;
+    (dx * dx + dy * dy).sqrt() <= 8.0
+}
+
 /// Chỉ cho phép thu gọn khi nhấn gọn ở vùng tiêu đề phía trên, tránh trượt tay vùng timeline/nút bấm.
 pub fn should_collapse_expanded_on_blank_click(
     pill: PillRectDip,
     down_pos: (f32, f32),
     up_pos: (f32, f32),
 ) -> bool {
-    let dx = up_pos.0 - down_pos.0;
-    let dy = up_pos.1 - down_pos.1;
-    if (dx * dx + dy * dy).sqrt() > 8.0 {
+    if !is_compact_click(down_pos, up_pos) {
         return false;
     }
     let header_limit_y = pill.top + 80.0;
     down_pos.1 < header_limit_y && up_pos.1 < header_limit_y
+}
+
+/// Cho phép bấm vào thanh tiêu đề phía trên của bảng Cài đặt / Thiết bị phát để quay lại nhanh.
+pub fn should_close_subview_on_header_click(
+    pill: PillRectDip,
+    down_pos: (f32, f32),
+    up_pos: (f32, f32),
+) -> bool {
+    if !is_compact_click(down_pos, up_pos) {
+        return false;
+    }
+    let header_limit_y = pill.top + 38.0;
+    pill_contains_dip(pill, down_pos.0, down_pos.1, 0.0)
+        && pill_contains_dip(pill, up_pos.0, up_pos.1, 0.0)
+        && down_pos.1 < header_limit_y
+        && up_pos.1 < header_limit_y
+}
+
+/// Cho phép bấm vào thanh tiêu đề phía trên của Khay tệp để thu gọn nhanh.
+pub fn should_collapse_shelf_on_header_click(
+    rect: PillRectDip,
+    down_pos: (f32, f32),
+    up_pos: (f32, f32),
+) -> bool {
+    if !is_compact_click(down_pos, up_pos) {
+        return false;
+    }
+    let header_limit_y = rect.top + 34.0;
+    shelf_contains_dip(rect, down_pos.0, down_pos.1, 0.0)
+        && shelf_contains_dip(rect, up_pos.0, up_pos.1, 0.0)
+        && down_pos.1 < header_limit_y
+        && up_pos.1 < header_limit_y
 }
 
 pub fn settings_section_tops(pill: PillRectDip) -> [f32; 3] {

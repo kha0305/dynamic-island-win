@@ -11,7 +11,8 @@ pub use hitboxes::{
     MAX_SHELF_VISIBLE_ROWS, fill_audio_devices_hitboxes, fill_interactive_hitboxes,
     fill_notice_hitboxes, fill_shelf_hitboxes, fill_volume_hud_hitboxes, pill_contains_dip,
     settings_section_tops, shelf_contains_dip, shelf_pill_rect,
-    should_collapse_expanded_on_blank_click, timeline_ratio_for_x, timeline_seek_hit_bounds,
+    should_close_subview_on_header_click, should_collapse_expanded_on_blank_click,
+    should_collapse_shelf_on_header_click, timeline_ratio_for_x, timeline_seek_hit_bounds,
     volume_seek_hit_bounds,
 };
 
