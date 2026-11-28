@@ -30,14 +30,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DEVICE_NOTIFY_WINDOW_HANDLE, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetCursorPos,
     GetSystemMetrics, GetWindowLongPtrW, HCURSOR, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND,
     IsWindow, IsWindowVisible, KillTimer, LoadCursorW, MA_NOACTIVATE, MSGFLT_ALLOW,
-    PBT_APMPOWERSTATUSCHANGE, PBT_POWERSETTINGCHANGE, PostQuitMessage, RegisterClassExW, SM_CXDRAG,
-    SM_CYDRAG, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOZORDER, SetCursor, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, UnregisterClassW, WM_APP, WM_CAPTURECHANGED,
-    WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_NCHITTEST, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WindowFromPoint,
+    PBT_APMPOWERSTATUSCHANGE, PBT_POWERSETTINGCHANGE, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SM_CXDRAG, SM_CYDRAG, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOZORDER, SetCursor, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    UnregisterClassW, WM_APP, WM_CAPTURECHANGED, WM_COMMAND, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_DROPFILES, WM_ENDSESSION, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_POWERBROADCAST,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WindowFromPoint,
 };
 use windows::core::PCWSTR;
 
@@ -75,7 +75,7 @@ use crate::tray::{
     IDM_MONITOR_MAX, IDM_OPEN_SETTINGS, IDM_TOGGLE_AUTO_HIDE, IDM_TOGGLE_AUTOSTART,
     IDM_TOGGLE_EXPANDED, IDM_TOGGLE_FULLSCREEN, IDM_TOGGLE_HUD_POWER, IDM_TOGGLE_HUD_VOLUME,
     IDM_TOGGLE_HUD_WHEEL, IDM_TOGGLE_NOTCH_COLLAPSE, IDM_TOGGLE_VISIBLE, IDM_TOGGLE_VISUALIZER,
-    TrayIcon, WM_APP_TRAY, to_wide_null,
+    TrayIcon, WM_APP_TRAY, load_app_icon_for_window, to_wide_null,
 };
 use crate::updater::{
     APP_VERSION, UpdateReleaseInfo, UpdaterEvent, WM_APP_UPDATE_EVENT, check_for_updates_async,
@@ -99,11 +99,14 @@ const TIMER_HUD_EXPIRE_ID: usize = 6;
 const TIMER_NOTICE_EXPIRE_ID: usize = 7;
 const TIMER_ANTI_EXPIRE_ID: usize = 8;
 const TIMER_SHELF_DRAG_LEAVE_ID: usize = 9;
+const TIMER_TRAY_RETRY_ID: usize = 10;
 const AUTO_COLLAPSE_DELAY_MS: u32 = 5_000;
 const COMPACT_TO_NOTCH_DELAY_MS: u32 = 4_000;
 const NOTICE_AUTO_DISMISS_MS: u32 = 4_000;
 const ANTI_TERMINAL_DISPLAY_MS: u32 = 4_000;
 const SHELF_DRAG_LEAVE_DELAY_MS: u32 = 180;
+const TRAY_RETRY_INTERVAL_MS: u32 = 1_500;
+const MAX_TRAY_RETRY_ATTEMPTS: u8 = 20;
 const FULLSCREEN_CHECK_INTERVAL_MS: u32 = 800;
 const TIMELINE_TICK_INTERVAL_MS: u32 = 1000;
 const STARTUP_UPDATE_DELAY_MS: u32 = 10_000;
@@ -194,6 +197,8 @@ struct WindowController {
     active_hud: Option<HudContent>,
     fg_hook: Option<ForegroundHookGuard>,
     tray: Option<TrayIcon>,
+    wm_taskbar_created: u32,
+    tray_retry_attempts: u8,
     last_region: Option<(PixelRect, i32)>,
     last_shelf_region: Option<(PixelRect, i32)>,
     last_bridge_region: Option<PixelRect>,
@@ -234,12 +239,18 @@ impl IslandWindow {
         let window_title = to_wide_null("Win Dynamic Island");
         let cursor_arrow = unsafe { LoadCursorW(None, IDC_ARROW) }?;
         let cursor_hand = unsafe { LoadCursorW(None, IDC_HAND) }?;
+        let app_icon_large = load_app_icon_for_window(hinstance, true).unwrap_or_default();
+        let app_icon_small = load_app_icon_for_window(hinstance, false).unwrap_or_default();
+        let taskbar_msg_w = to_wide_null("TaskbarCreated");
+        let wm_taskbar_created = unsafe { RegisterWindowMessageW(PCWSTR(taskbar_msg_w.as_ptr())) };
 
         let wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(window_proc),
             hInstance: hinstance,
+            hIcon: app_icon_large,
+            hIconSm: app_icon_small,
             hCursor: cursor_arrow,
             lpszClassName: PCWSTR(class_name.as_ptr()),
             ..Default::default()
@@ -375,6 +386,8 @@ impl IslandWindow {
             active_hud: None,
             fg_hook: Some(fg_hook),
             tray,
+            wm_taskbar_created,
+            tray_retry_attempts: 0,
             last_region: None,
             last_shelf_region: None,
             last_bridge_region: None,
@@ -411,6 +424,7 @@ impl IslandWindow {
             ctrl.refresh_fullscreen_state();
             ctrl.apply_target_and_render();
             ctrl.update_tray_tooltip();
+            ctrl.schedule_tray_retry_if_missing();
             ctrl.schedule_startup_update_check();
         }
 
@@ -446,6 +460,7 @@ impl WindowController {
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_FULLSCREEN_CHECK_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TIMELINE_TICK_ID) };
         let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_STARTUP_UPDATE_ID) };
+        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TRAY_RETRY_ID) };
         if self.drop_target_registered {
             self.drop_target_registered = false;
             unsafe {
@@ -469,6 +484,91 @@ impl WindowController {
         self.release_resources();
         unsafe {
             let _ = DestroyWindow(self.hwnd);
+        }
+    }
+
+    pub(super) fn build_tray_tooltip(&self) -> String {
+        let status = if !self.config.visible {
+            "Đang ẩn"
+        } else if self.fullscreen_active {
+            "Tạm ẩn (Toàn màn hình)"
+        } else if self.media_state.has_session && self.media_state.is_playing {
+            "Đang phát"
+        } else {
+            "Sẵn sàng"
+        };
+        let glass_tag = if self.renderer.has_blur_effect() {
+            "Kính mờ Acrylic - "
+        } else if self.renderer.has_glass_backdrop() {
+            "Kính trong - "
+        } else {
+            ""
+        };
+        let update_tag = match &self.available_update {
+            Some(rel) => format!(" - Có bản mới {}", rel.version_tag),
+            None if self.update_in_progress => String::from(" - Đang kiểm tra cập nhật"),
+            None => String::new(),
+        };
+        let drop_tag = if self.drop_target_registered {
+            ""
+        } else {
+            " - Kéo thả: Fallback"
+        };
+        format!(
+            "Win Dynamic Island - {}{}{} ({}{})",
+            status,
+            update_tag,
+            drop_tag,
+            glass_tag,
+            self.renderer.adapter_name()
+        )
+    }
+
+    pub(super) fn schedule_tray_retry_if_missing(&mut self) {
+        if self.tray.is_none() && self.tray_retry_attempts < MAX_TRAY_RETRY_ATTEMPTS {
+            unsafe {
+                let _ = SetTimer(
+                    Some(self.hwnd),
+                    TIMER_TRAY_RETRY_ID,
+                    TRAY_RETRY_INTERVAL_MS,
+                    None,
+                );
+            }
+        }
+    }
+
+    pub(super) fn handle_tray_retry_timer(&mut self) {
+        if self.tray.is_some() {
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TRAY_RETRY_ID) };
+            return;
+        }
+        let tooltip = self.build_tray_tooltip();
+        if let Ok(tray) = TrayIcon::new(self.hwnd, &tooltip) {
+            self.tray = Some(tray);
+            self.tray_retry_attempts = 0;
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TRAY_RETRY_ID) };
+            return;
+        }
+        self.tray_retry_attempts = self.tray_retry_attempts.saturating_add(1);
+        if self.tray_retry_attempts >= MAX_TRAY_RETRY_ATTEMPTS {
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TRAY_RETRY_ID) };
+        }
+    }
+
+    pub(super) fn handle_taskbar_created(&mut self) {
+        let tooltip = self.build_tray_tooltip();
+        if let Some(tray) = self.tray.as_mut() {
+            if !tray.re_add(&tooltip) {
+                self.tray = TrayIcon::new(self.hwnd, &tooltip).ok();
+            }
+        } else {
+            self.tray = TrayIcon::new(self.hwnd, &tooltip).ok();
+        }
+        if self.tray.is_some() {
+            self.tray_retry_attempts = 0;
+            let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_TRAY_RETRY_ID) };
+        } else {
+            self.schedule_tray_retry_if_missing();
         }
     }
 }
@@ -596,6 +696,7 @@ unsafe extern "system" fn window_proc(
                         let _ = unsafe { KillTimer(Some(hwnd), TIMER_STARTUP_UPDATE_ID) };
                         ctrl.trigger_update_check(true);
                     }
+                    TIMER_TRAY_RETRY_ID => ctrl.handle_tray_retry_timer(),
                     TIMER_TIMELINE_TICK_ID
                         if !ctrl.animator.is_animating()
                             && !ctrl.dragging_timeline
@@ -841,6 +942,14 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_ENDSESSION => {
+            if wparam.0 != 0
+                && let Some(ctrl) = get_controller_mut(hwnd)
+            {
+                ctrl.release_resources();
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             let ptr = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) } as *mut WindowController;
             if !ptr.is_null() {
@@ -851,6 +960,15 @@ unsafe extern "system" fn window_proc(
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => {
+            if let Some(ctrl) = get_controller_mut(hwnd)
+                && ctrl.wm_taskbar_created != 0
+                && msg == ctrl.wm_taskbar_created
+            {
+                ctrl.handle_taskbar_created();
+                return LRESULT(0);
+            }
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+        }
     }
 }

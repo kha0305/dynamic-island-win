@@ -1,15 +1,17 @@
 use std::mem::size_of;
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{HINSTANCE, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HGDIOBJ};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    HICON, HMENU, ICONINFO, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED,
-    PostMessageW, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
-    TrackPopupMenu, WM_APP, WM_NULL,
+    GetSystemMetrics, HICON, HMENU, ICONINFO, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, LoadImageW,
+    MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MF_UNCHECKED, PostMessageW,
+    SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SetForegroundWindow, TPM_BOTTOMALIGN,
+    TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_NULL,
 };
 use windows::core::PCWSTR;
 
@@ -39,6 +41,59 @@ pub const IDM_MONITOR_MAX: usize = 2031;
 pub const IDM_AUDIO_DEVICE_BASE: usize = 2100;
 pub const IDM_AUDIO_DEVICE_MAX: usize = 2131;
 
+pub const IDI_APP_ICON: u16 = 1;
+
+pub fn load_app_icon_for_window(hinstance: HINSTANCE, large: bool) -> Option<HICON> {
+    let (cx_metric, cy_metric) = if large {
+        (SM_CXICON, SM_CYICON)
+    } else {
+        (SM_CXSMICON, SM_CYSMICON)
+    };
+    let cx = unsafe { GetSystemMetrics(cx_metric) }.max(16);
+    let cy = unsafe { GetSystemMetrics(cy_metric) }.max(16);
+    let handle = unsafe {
+        LoadImageW(
+            Some(hinstance),
+            PCWSTR(IDI_APP_ICON as usize as *const u16),
+            IMAGE_ICON,
+            cx,
+            cy,
+            LR_DEFAULTCOLOR | LR_SHARED,
+        )
+    }
+    .ok()?;
+    let icon = HICON(handle.0);
+    if icon.is_invalid() {
+        None
+    } else {
+        Some(icon)
+    }
+}
+
+fn load_tray_app_icon() -> windows::core::Result<HICON> {
+    if let Ok(hmod) = unsafe { GetModuleHandleW(None) } {
+        let hinstance: HINSTANCE = hmod.into();
+        let cx = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
+        let cy = unsafe { GetSystemMetrics(SM_CYSMICON) }.max(16);
+        if let Ok(handle) = unsafe {
+            LoadImageW(
+                Some(hinstance),
+                PCWSTR(IDI_APP_ICON as usize as *const u16),
+                IMAGE_ICON,
+                cx,
+                cy,
+                LR_DEFAULTCOLOR,
+            )
+        } {
+            let icon = HICON(handle.0);
+            if !icon.is_invalid() {
+                return Ok(icon);
+            }
+        }
+    }
+    create_pill_tray_icon()
+}
+
 pub struct TrayIcon {
     hwnd: HWND,
     icon: HICON,
@@ -47,7 +102,7 @@ pub struct TrayIcon {
 
 impl TrayIcon {
     pub fn new(hwnd: HWND, tooltip: &str) -> windows::core::Result<Self> {
-        let icon = create_pill_tray_icon()?;
+        let icon = load_tray_app_icon()?;
         let mut nid = build_notify_icon_data(hwnd, icon, tooltip);
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
 
@@ -64,6 +119,16 @@ impl TrayIcon {
             icon,
             added: true,
         })
+    }
+
+    pub fn re_add(&mut self, tooltip: &str) -> bool {
+        let mut nid = build_notify_icon_data(self.hwnd, self.icon, tooltip);
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+        let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &nid) }.as_bool();
+        if ok {
+            self.added = true;
+        }
+        ok
     }
 
     pub fn update_tooltip(&self, tooltip: &str) {
@@ -110,97 +175,88 @@ impl TrayIcon {
             "Hiện Dynamic Island"
         };
         append_menu_item(menu, IDM_TOGGLE_VISIBLE, toggle_label, false);
-        append_menu_item(menu, IDM_OPEN_SETTINGS, "Mở bảng điều khiển nhanh", false);
-        let expand_label = if is_expanded {
-            if config.notch_collapse_after_4s || (config.auto_hide_when_idle && !media.has_session)
-            {
-                "Thu gọn thành thanh mảnh"
-            } else {
-                "Thu gọn viên thuốc"
-            }
-        } else {
-            "Mở rộng thẻ phát nhạc"
-        };
-        append_menu_item(menu, IDM_TOGGLE_EXPANDED, expand_label, false);
+        append_menu_item(menu, IDM_OPEN_SETTINGS, "Cài đặt nhanh", false);
 
-        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_NOTCH_COLLAPSE,
-            "Thu gọn mép trên sau 4 giây",
-            config.notch_collapse_after_4s,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_AUTO_HIDE,
-            "Tự ẩn khi rảnh",
-            config.auto_hide_when_idle,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_FULLSCREEN,
-            "Tự ẩn khi toàn màn hình",
-            config.auto_hide_fullscreen,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_VISUALIZER,
-            "Hiệu ứng sóng nhạc động",
-            config.visualizer_enabled,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_HUD_VOLUME,
-            "HUD Âm lượng",
-            config.hud_volume_enabled,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_HUD_WHEEL,
-            "Cuộn chuột trên pill chỉnh loa",
-            config.hud_wheel_enabled,
-        );
-        append_menu_item(
-            menu,
-            IDM_TOGGLE_HUD_POWER,
-            "HUD Pin / Sạc",
-            config.hud_power_enabled,
-        );
-
-        let _ = unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()) };
-        if let Ok(sub_monitors) = unsafe { CreatePopupMenu() } {
-            let active_idx = if monitors.is_empty() {
-                0
+        if let Ok(sub_customize) = unsafe { CreatePopupMenu() } {
+            let expand_label = if is_expanded {
+                if config.notch_collapse_after_4s
+                    || (config.auto_hide_when_idle && !media.has_session)
+                {
+                    "Thu gọn thành thanh mảnh"
+                } else {
+                    "Thu gọn viên thuốc"
+                }
             } else {
-                config.monitor_index % monitors.len()
+                "Mở rộng thẻ phát nhạc"
             };
-            for (idx, mon) in monitors.iter().enumerate() {
-                if IDM_MONITOR_BASE + idx > IDM_MONITOR_MAX {
-                    break;
+            append_menu_item(sub_customize, IDM_TOGGLE_EXPANDED, expand_label, false);
+            let _ = unsafe { AppendMenuW(sub_customize, MF_SEPARATOR, 0, PCWSTR::null()) };
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_NOTCH_COLLAPSE,
+                "Thu gọn mép trên sau 4 giây",
+                config.notch_collapse_after_4s,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_AUTO_HIDE,
+                "Tự ẩn khi rảnh",
+                config.auto_hide_when_idle,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_FULLSCREEN,
+                "Tự ẩn khi toàn màn hình",
+                config.auto_hide_fullscreen,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_VISUALIZER,
+                "Hiệu ứng sóng nhạc động",
+                config.visualizer_enabled,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_HUD_VOLUME,
+                "HUD Âm lượng",
+                config.hud_volume_enabled,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_HUD_WHEEL,
+                "Cuộn chuột chỉnh loa",
+                config.hud_wheel_enabled,
+            );
+            append_menu_item(
+                sub_customize,
+                IDM_TOGGLE_HUD_POWER,
+                "HUD Pin / Sạc",
+                config.hud_power_enabled,
+            );
+
+            if let Ok(sub_monitors) = unsafe { CreatePopupMenu() } {
+                let active_idx = if monitors.is_empty() {
+                    0
+                } else {
+                    config.monitor_index % monitors.len()
+                };
+                for (idx, mon) in monitors.iter().enumerate() {
+                    if IDM_MONITOR_BASE + idx > IDM_MONITOR_MAX {
+                        break;
+                    }
+                    append_menu_item(
+                        sub_monitors,
+                        IDM_MONITOR_BASE + idx,
+                        &mon.label,
+                        idx == active_idx,
+                    );
                 }
-                append_menu_item(
-                    sub_monitors,
-                    IDM_MONITOR_BASE + idx,
-                    &mon.label,
-                    idx == active_idx,
-                );
+                let _ = unsafe { AppendMenuW(sub_customize, MF_SEPARATOR, 0, PCWSTR::null()) };
+                append_popup_submenu(sub_customize, sub_monitors, "Màn hình hiển thị");
             }
-            let sub_title = to_wide_null("Màn hình hiển thị");
-            if unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_POPUP,
-                    sub_monitors.0 as usize,
-                    PCWSTR(sub_title.as_ptr()),
-                )
-            }
-            .is_err()
-            {
-                unsafe {
-                    let _ = DestroyMenu(sub_monitors);
-                }
-            }
+            append_popup_submenu(menu, sub_customize, "Tùy chỉnh");
         }
+
         if let Ok(sub_audio) = unsafe { CreatePopupMenu() } {
             if audio_devices.is_empty() {
                 append_disabled_header(sub_audio, "Chưa có thiết bị phát");
@@ -217,22 +273,9 @@ impl TrayIcon {
                     );
                 }
             }
-            let audio_title = to_wide_null("Thiết bị phát âm thanh");
-            if unsafe {
-                AppendMenuW(
-                    menu,
-                    MF_POPUP,
-                    sub_audio.0 as usize,
-                    PCWSTR(audio_title.as_ptr()),
-                )
-            }
-            .is_err()
-            {
-                unsafe {
-                    let _ = DestroyMenu(sub_audio);
-                }
-            }
+            append_popup_submenu(menu, sub_audio, "Thiết bị phát");
         }
+
         append_menu_item(
             menu,
             IDM_TOGGLE_AUTOSTART,
@@ -294,6 +337,16 @@ impl Drop for MenuGuard {
             unsafe {
                 let _ = DestroyMenu(self.0);
             }
+        }
+    }
+}
+
+fn append_popup_submenu(parent: HMENU, child: HMENU, title: &str) {
+    let title_w = to_wide_null(title);
+    if unsafe { AppendMenuW(parent, MF_POPUP, child.0 as usize, PCWSTR(title_w.as_ptr())) }.is_err()
+    {
+        unsafe {
+            let _ = DestroyMenu(child);
         }
     }
 }

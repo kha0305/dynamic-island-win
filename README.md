@@ -10,10 +10,12 @@ Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ viết thuần bằ
 - **File Shelf cạnh Dynamic (FHD):** Khay tệp dính ngay cạnh phải Dynamic Island (`OleInitialize` + `IDropTarget` + `IDropSource`/`IDataObject`), hỗ trợ kéo thả hai chiều với Explorer/trình duyệt/app nhắn tin, tickbox chọn tệp và chỉ hiện `Delete All` khi có mục được tick (dọn khay tạm, giữ nguyên tệp gốc trên đĩa).
 - **Theo dõi Anti 10 trạng thái (`agy CLI`, `Anti IDE`, `Anti app`):** Dùng chung 1 tệp tiến độ cục bộ (`%LOCALAPPDATA%\WinDynamicIsland\anti-progress.json`) qua cổng hook `--anti-hook <EVENT>` + `ReadDirectoryChangesW` (`0% CPU` lúc rảnh), chỉ hiển thị kèm animation xoay khi chuyển sang ứng dụng khác.
 - **Tối ưu Laptop Hybrid GPU & gọn nhẹ:** Tự ưu tiên GPU tích hợp (`DXGI_GPU_PREFERENCE_MINIMUM_POWER`), không đánh thức card rời NVIDIA khi rảnh; tự ẩn khi phát hiện ứng dụng toàn màn hình.
-- **Bản Portable độc lập & Tự cập nhật Liquid Glass:** Liên kết tĩnh CRT (`+crt-static`) không cần Visual C++ Redistributable, chặn mở trùng tiến trình (`CreateMutexW`) và tự kiểm tra/tải bản cập nhật từ GitHub Releases (`WinHTTP` + `SHA-256`) kèm thẻ thông báo nội bộ.
+- **Hai gói phân phối (Setup + Portable) & Tự cập nhật Liquid Glass:** Hỗ trợ cả trình cài đặt chuẩn `WinDynamicIsland-Setup.exe` (tạo lối tắt Start Menu/Desktop, gỡ cài đặt trong Windows Settings, giữ quyền `Medium IL`) lẫn bản chạy ngay Portable (`WinDynamicIsland-win64.zip` liên kết tĩnh CRT `+crt-static` không cần Visual C++ Redistributable), đi kèm bộ Icon chính thức, chặn mở trùng (`CreateMutexW`), phục hồi Startup/TaskbarCreated và tự cập nhật từ GitHub Releases (`WinHTTP` + `SHA-256`).
 
 ## Cấu trúc thư mục
-- `src/main.rs` — Điểm khởi chạy, cổng `--anti-hook`, khóa đơn tiến trình và `OleInitialize`.
+- `assets/app.ico` & `build.rs` — Biểu tượng đa kích thước Liquid Glass và trình nhúng tài nguyên PE thuần Rust (Icon, Version, Manifest).
+- `src/main.rs` — Điểm khởi chạy, cổng `--anti-hook`, `--uninstall`, retry khởi tạo lúc logon, khóa đơn tiến trình và `OleInitialize`.
+- `src/install.rs` & `src/bin/setup.rs` — Trình cài đặt `WinDynamicIsland-Setup.exe`, tạo Shortcut COM và gỡ cài đặt sạch sẽ.
 - `src/anti.rs` — Miền dữ liệu 10 trạng thái Anti, quản lý Global Hook an toàn và luồng `ReadDirectoryChangesW`.
 - `src/shelf.rs` — Trạng thái File Shelf và bộ xử lý OLE Drag-Drop hai chiều (`CF_HDROP`).
 - `src/json_mini.rs` — Bộ phân tích JSON gọn không phụ thuộc và `sha256_hex`.
@@ -32,9 +34,11 @@ Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ viết thuần bằ
 Yêu cầu công cụ Rust MSVC (`x86_64-pc-windows-msvc`):
 
 ```powershell
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --release
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --release --locked --bin win-dynamic-island
+$env:WDI_SETUP_PAYLOAD = (Resolve-Path target\release\win-dynamic-island.exe).Path
+cargo build --release --locked --bin win-dynamic-island-setup
 ```
 
-Thành phẩm bản phát hành nằm tại `target\release\win-dynamic-island.exe`.
+Thành phẩm bản phát hành nằm tại `target\release\win-dynamic-island.exe` và `target\release\win-dynamic-island-setup.exe`.

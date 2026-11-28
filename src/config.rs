@@ -1,17 +1,21 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
-    REG_VALUE_TYPE, RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, REG_BINARY, REG_SZ, REG_VALUE_TYPE, RegCloseKey,
+    RegOpenKeyExW, RegQueryValueExW,
 };
 use windows::core::PCWSTR;
 
+#[cfg(test)]
+use crate::install::format_autostart_command;
+pub use crate::install::set_autostart_for_exe;
 use crate::state::AppConfig;
 use crate::tray::to_wide_null;
 
 const RUN_KEY_PATH: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const STARTUP_APPROVED_RUN_KEY_PATH: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 const RUN_VALUE_NAME: &str = "WinDynamicIsland";
 
 struct RegKeyGuard(HKEY);
@@ -46,6 +50,9 @@ pub fn load_config() -> AppConfig {
         Some(content) => parse_config(&content),
         None => AppConfig::default(),
     };
+    if !cfg!(test) {
+        sync_autostart_path_if_needed();
+    }
     cfg.autostart = is_autostart_enabled();
     cfg
 }
@@ -153,13 +160,37 @@ fn parse_bool(raw: &str) -> Option<bool> {
     }
 }
 
-pub fn format_autostart_command(exe_path: &std::path::Path) -> String {
-    format!("\"{}\"", exe_path.display())
+pub fn extract_autostart_exe_path(command: &str) -> Option<PathBuf> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        let inner = rest[..end].trim();
+        if inner.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(inner));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if let Some(idx) = lower.find(".exe") {
+        let end = idx + 4;
+        return Some(PathBuf::from(trimmed[..end].trim()));
+    }
+    trimmed.split_whitespace().next().map(PathBuf::from)
 }
 
-pub fn is_autostart_enabled() -> bool {
-    let subkey = to_wide_null(RUN_KEY_PATH);
-    let value_name = to_wide_null(RUN_VALUE_NAME);
+pub fn is_startup_approved_bytes_enabled(bytes: &[u8]) -> bool {
+    match bytes.first() {
+        Some(&first) => (first & 1) == 0,
+        None => true,
+    }
+}
+
+fn query_reg_sz_value(subkey_path: &str, value_name: &str) -> Option<String> {
+    let subkey = to_wide_null(subkey_path);
+    let val_w = to_wide_null(value_name);
     let mut hkey = HKEY::default();
     let open_err = unsafe {
         RegOpenKeyExW(
@@ -171,83 +202,146 @@ pub fn is_autostart_enabled() -> bool {
         )
     };
     if open_err.is_err() {
-        return false;
+        return None;
     }
     let _guard = RegKeyGuard(hkey);
 
     let mut reg_type = REG_VALUE_TYPE::default();
     let mut byte_len = 0u32;
-    let query_err = unsafe {
+    let probe = unsafe {
         RegQueryValueExW(
             hkey,
-            PCWSTR(value_name.as_ptr()),
+            PCWSTR(val_w.as_ptr()),
             None,
             Some(&mut reg_type),
             None,
             Some(&mut byte_len),
         )
     };
-    query_err.is_ok() && byte_len > 2
+    if probe.is_err() || !(2..=8192).contains(&byte_len) {
+        return None;
+    }
+    let mut buf = vec![0u8; byte_len as usize];
+    let read = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(val_w.as_ptr()),
+            None,
+            Some(&mut reg_type),
+            Some(buf.as_mut_ptr()),
+            Some(&mut byte_len),
+        )
+    };
+    if read.is_err() || reg_type != REG_SZ {
+        return None;
+    }
+    let u16_count = (byte_len as usize) / 2;
+    let mut units = Vec::with_capacity(u16_count);
+    for &[lo, hi] in buf[..u16_count * 2].as_chunks::<2>().0 {
+        let u = u16::from_le_bytes([lo, hi]);
+        if u == 0 {
+            break;
+        }
+        units.push(u);
+    }
+    Some(String::from_utf16_lossy(&units))
+}
+
+fn is_startup_approved_enabled_in_registry() -> bool {
+    let subkey = to_wide_null(STARTUP_APPROVED_RUN_KEY_PATH);
+    let val_w = to_wide_null(RUN_VALUE_NAME);
+    let mut hkey = HKEY::default();
+    let open_err = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            None,
+            KEY_QUERY_VALUE,
+            &mut hkey,
+        )
+    };
+    if open_err.is_err() {
+        return true;
+    }
+    let _guard = RegKeyGuard(hkey);
+
+    let mut reg_type = REG_VALUE_TYPE::default();
+    let mut byte_len = 0u32;
+    let probe = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(val_w.as_ptr()),
+            None,
+            Some(&mut reg_type),
+            None,
+            Some(&mut byte_len),
+        )
+    };
+    if probe.is_err() || byte_len == 0 || byte_len > 256 {
+        return true;
+    }
+    let mut buf = vec![0u8; byte_len as usize];
+    let read = unsafe {
+        RegQueryValueExW(
+            hkey,
+            PCWSTR(val_w.as_ptr()),
+            None,
+            Some(&mut reg_type),
+            Some(buf.as_mut_ptr()),
+            Some(&mut byte_len),
+        )
+    };
+    if read.is_err() || reg_type != REG_BINARY {
+        return true;
+    }
+    is_startup_approved_bytes_enabled(&buf[..byte_len as usize])
+}
+
+pub fn sync_autostart_path_if_needed() {
+    let Some(cmd) = query_reg_sz_value(RUN_KEY_PATH, RUN_VALUE_NAME) else {
+        return;
+    };
+    if !is_startup_approved_enabled_in_registry() {
+        return;
+    }
+    let Some(registered_exe) = extract_autostart_exe_path(&cmd) else {
+        return;
+    };
+    let Ok(current_exe) = std::env::current_exe() else {
+        return;
+    };
+    if !current_exe.is_file() {
+        return;
+    }
+    let current_lower = current_exe.to_string_lossy().to_ascii_lowercase();
+    if current_lower.contains("\\target\\debug\\") {
+        return;
+    }
+    let is_broken = !registered_exe.is_file();
+    let is_installed_copy = current_lower.contains("\\programs\\windynamicisland\\");
+    if (is_broken || is_installed_copy) && registered_exe != current_exe {
+        let _ = set_autostart_for_exe(&current_exe, true);
+    }
+}
+
+pub fn is_autostart_enabled() -> bool {
+    let Some(cmd) = query_reg_sz_value(RUN_KEY_PATH, RUN_VALUE_NAME) else {
+        return false;
+    };
+    let Some(exe_path) = extract_autostart_exe_path(&cmd) else {
+        return false;
+    };
+    exe_path.is_file() && is_startup_approved_enabled_in_registry()
 }
 
 pub fn set_autostart_enabled(enabled: bool) -> bool {
-    let subkey = to_wide_null(RUN_KEY_PATH);
-    let value_name = to_wide_null(RUN_VALUE_NAME);
-
     if enabled {
         let Ok(exe) = std::env::current_exe() else {
             return false;
         };
-        let cmd = format_autostart_command(&exe);
-        let wide = to_wide_null(&cmd);
-        let bytes: Vec<u8> = wide.iter().flat_map(|c| c.to_le_bytes()).collect();
-
-        let mut hkey = HKEY::default();
-        let create_err = unsafe {
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                PCWSTR(subkey.as_ptr()),
-                None,
-                PCWSTR::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_SET_VALUE,
-                None,
-                &mut hkey,
-                None,
-            )
-        };
-        if create_err.is_err() {
-            return false;
-        }
-        let _guard = RegKeyGuard(hkey);
-
-        let set_err = unsafe {
-            RegSetValueExW(
-                hkey,
-                PCWSTR(value_name.as_ptr()),
-                None,
-                REG_SZ,
-                Some(&bytes),
-            )
-        };
-        set_err.is_ok()
+        set_autostart_for_exe(&exe, true)
     } else {
-        let mut hkey = HKEY::default();
-        let open_err = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                PCWSTR(subkey.as_ptr()),
-                None,
-                KEY_SET_VALUE,
-                &mut hkey,
-            )
-        };
-        if open_err.is_err() {
-            return true;
-        }
-        let _guard = RegKeyGuard(hkey);
-        let del_err = unsafe { RegDeleteValueW(hkey, PCWSTR(value_name.as_ptr())) };
-        del_err.is_ok() || !is_autostart_enabled()
+        set_autostart_for_exe(Path::new(""), false)
     }
 }
 
@@ -302,5 +396,30 @@ mod tests {
             format_autostart_command(path),
             r#""C:\Program Files\Win Dynamic Island\app.exe""#
         );
+    }
+
+    #[test]
+    fn extract_autostart_exe_path_handles_quoted_and_unquoted_commands() {
+        assert_eq!(
+            extract_autostart_exe_path(
+                r#""C:\Users\ASUS\Desktop\New folder\win-dynamic-island.exe" --flag"#
+            ),
+            Some(PathBuf::from(
+                r"C:\Users\ASUS\Desktop\New folder\win-dynamic-island.exe"
+            ))
+        );
+        assert_eq!(
+            extract_autostart_exe_path(r"C:\Apps\win-dynamic-island.exe /startup"),
+            Some(PathBuf::from(r"C:\Apps\win-dynamic-island.exe"))
+        );
+        assert_eq!(extract_autostart_exe_path("   "), None);
+    }
+
+    #[test]
+    fn startup_approved_bytes_detects_enabled_and_disabled_states() {
+        assert!(is_startup_approved_bytes_enabled(&[2, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(is_startup_approved_bytes_enabled(&[6, 0, 0, 0]));
+        assert!(!is_startup_approved_bytes_enabled(&[3, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(!is_startup_approved_bytes_enabled(&[7, 0, 0, 0]));
     }
 }

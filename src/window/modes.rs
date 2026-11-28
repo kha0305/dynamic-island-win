@@ -526,40 +526,7 @@ impl WindowController {
 
     pub(super) fn update_tray_tooltip(&self) {
         if let Some(tray) = &self.tray {
-            let status = if !self.config.visible {
-                "Đang ẩn"
-            } else if self.fullscreen_active {
-                "Tạm ẩn (Toàn màn hình)"
-            } else if self.media_state.has_session && self.media_state.is_playing {
-                "Đang phát"
-            } else {
-                "Sẵn sàng"
-            };
-            let glass_tag = if self.renderer.has_blur_effect() {
-                "Kính mờ Acrylic - "
-            } else if self.renderer.has_glass_backdrop() {
-                "Kính trong - "
-            } else {
-                ""
-            };
-            let update_tag = match &self.available_update {
-                Some(rel) => format!(" - Có bản mới {}", rel.version_tag),
-                None if self.update_in_progress => String::from(" - Đang kiểm tra cập nhật"),
-                None => String::new(),
-            };
-            let drop_tag = if self.drop_target_registered {
-                ""
-            } else {
-                " - Kéo thả: Fallback"
-            };
-            let msg = format!(
-                "Win Dynamic Island - {}{}{} ({}{})",
-                status,
-                update_tag,
-                drop_tag,
-                glass_tag,
-                self.renderer.adapter_name()
-            );
+            let msg = self.build_tray_tooltip();
             tray.update_tooltip(&msg);
         }
     }

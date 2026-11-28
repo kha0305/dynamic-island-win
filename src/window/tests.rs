@@ -207,6 +207,8 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             active_hud: None,
             fg_hook: None,
             tray: None,
+            wm_taskbar_created: 0,
+            tray_retry_attempts: 0,
             last_region: None,
             last_shelf_region: None,
             last_bridge_region: None,

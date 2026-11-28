@@ -1,4 +1,4 @@
-name: Release Portable Build
+name: Release Setup and Portable Build
 
 on:
   push:
@@ -25,26 +25,33 @@ jobs:
       - name: Check Clippy and Unit Tests
         shell: pwsh
         run: |
-          cargo clippy --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 
-      - name: Build Release Binary (Static CRT)
+      - name: Build Release App and Setup Installer (Static CRT)
         shell: pwsh
-        run: cargo build --release --locked
+        run: |
+          cargo build --release --locked --bin win-dynamic-island
+          $env:WDI_SETUP_PAYLOAD = (Resolve-Path target\release\win-dynamic-island.exe).Path
+          cargo build --release --locked --bin win-dynamic-island-setup
 
-      - name: Package Portable Assets and SHA-256
+      - name: Package Setup, Portable Assets and SHA-256
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\release\win-dynamic-island.exe dist\win-dynamic-island.exe -Force
-          $hash = (Get-FileHash dist\win-dynamic-island.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  win-dynamic-island.exe" | Set-Content -Path dist\win-dynamic-island.exe.sha256 -Encoding ASCII
+          Copy-Item target\release\win-dynamic-island-setup.exe dist\WinDynamicIsland-Setup.exe -Force
+          $hashApp = (Get-FileHash dist\win-dynamic-island.exe -Algorithm SHA256).Hash.ToLower()
+          "$hashApp  win-dynamic-island.exe" | Set-Content -Path dist\win-dynamic-island.exe.sha256 -Encoding ASCII
+          $hashSetup = (Get-FileHash dist\WinDynamicIsland-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hashSetup  WinDynamicIsland-Setup.exe" | Set-Content -Path dist\WinDynamicIsland-Setup.exe.sha256 -Encoding ASCII
           @'
-          WIN DYNAMIC ISLAND - BẢN PORTABLE (WINDOWS 11 x64)
+          WIN DYNAMIC ISLAND - BẢN PORTABLE CHẠY NGAY (WINDOWS 11 x64)
 
-          1. Cách chạy:
-             - Giải nén và chép win-dynamic-island.exe vào một thư mục cố định (ví dụ: C:\Apps\WinDynamicIsland\).
-             - Bấm đúp để chạy ngay, không cần cài đặt Visual C++ Redistributable.
+          1. Hai cách sử dụng tùy chọn:
+             - Bản chạy ngay (Portable): Giải nén và chép win-dynamic-island.exe vào thư mục cố định rồi bấm đúp để chạy ngay.
+             - Bản cài đặt chuẩn (Setup): Chạy WinDynamicIsland-Setup.exe nếu muốn cài vào hệ thống, tạo lối tắt Start Menu/Desktop và gỡ cài đặt trong Windows Settings.
+             - Không cần cài đặt Visual C++ Redistributable.
              - Nếu Windows hiện SmartScreen ở lần chạy đầu, chọn "More info" -> "Run anyway".
 
           2. Cập nhật tự động:
@@ -58,6 +65,8 @@ jobs:
         with:
           generate_release_notes: true
           files: |
+            dist/WinDynamicIsland-Setup.exe
+            dist/WinDynamicIsland-Setup.exe.sha256
             dist/win-dynamic-island.exe
             dist/win-dynamic-island.exe.sha256
             dist/WinDynamicIsland-win64.zip

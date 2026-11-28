@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **45/45** `cargo test --locked`, `cargo build --release --locked` (`v0.3.3`, `854,016 bytes`, `SHA256=6fc14d2360b60743415b633d493baf63b36577cca0aa96ab472c3466ea25ad9f`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`).
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **48/48** (`win-dynamic-island`) + **1/1** (`win-dynamic-island-setup`) tests `cargo test --locked`, `cargo build --release --locked` (`v0.3.4`: `win-dynamic-island.exe` `971,776 bytes`, `WinDynamicIsland-Setup.exe` `1,458,688 bytes`, `WinDynamicIsland-win64.zip` `500,868 bytes`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `PROCESS_IL=0x2000`, `EMOJI_HITS=0`).
 
 ---
 
@@ -150,3 +150,13 @@
 - **Nguyên nhân gốc rễ:** Khi khởi chạy `dist\win-dynamic-island.exe` bằng `Start-Process` từ shell/agent có quyền Administrator, tiến trình kế thừa mức `High Mandatory Level` (`0x3000`), trong khi `explorer.exe` chạy ở `Medium Mandatory Level` (`0x2000`). Windows UIPI chặn hoàn toàn OLE `DoDragDrop` giữa hai mức Integrity Level này.
 - **Cách sửa:** Khởi chạy lại [dist/win-dynamic-island.exe](dist/win-dynamic-island.exe) thông qua `explorer.exe` để mang đúng mức `Medium IL` (`0x2000`, xác minh `PID 10512`) và bổ sung quy chuẩn bắt buộc vào [GEMINI.md](GEMINI.md).
 - **Cách phòng tránh:** Luôn khởi chạy tiến trình thử nghiệm/phát hành GUI qua `explorer.exe` và kiểm tra mức Integrity Level (`0x2000`) đồng nhất với `explorer.exe` mỗi khi khởi động lại ứng dụng nhận kéo thả OLE.
+
+### Lỗi #019: Startup chập chờn khi vừa đăng nhập Windows, mất khay hệ thống lúc Taskbar khởi tạo chậm và lỗi tự xóa `--uninstall` (`v0.3.4`)
+- **Hiện tượng lỗi:** Ứng dụng đã bật `Khởi động cùng Windows` nhưng lúc mở máy đôi khi chạy, đôi khi không chạy hoặc không thấy biểu tượng khay hệ thống; trong lúc thử nghiệm `--uninstall`, lệnh `cmd.exe /C timeout ...` thất bại do `Input redirection is not supported` và sai cú pháp dấu ngoặc kép.
+- **Nguyên nhân gốc rễ:**
+  - `src/main.rs` thoát im lặng nếu `IslandWindow::create()` (DWM/DXGI/DesktopWindowTarget) gặp lỗi thoáng qua ở giây đầu Windows logon (`windows_subsystem = "windows"` bỏ qua `eprintln!`).
+  - `src/window/mod.rs` chỉ gọi `TrayIcon::new` một lần khi tạo cửa sổ mà không lắng nghe `TaskbarCreated` và không thử lại nếu `Shell_TrayWnd` chưa sẵn sàng.
+  - `src/config.rs` không kiểm tra đường dẫn `.exe` còn tồn tại hay trạng thái chặn trong `Explorer\StartupApproved\Run`.
+  - Lệnh tự xóa trong `src/install.rs` dùng `timeout /t 1` (không chạy khi không có console stdin) và `.args(["/C", ...])` gây xung đột ngoặc kép `cmd.exe`.
+- **Cách sửa:** Thêm vòng lặp thử lại khởi tạo + ghi `startup.log` khi lỗi ở [src/main.rs](src/main.rs); thêm `RegisterWindowMessageW("TaskbarCreated")` + `TIMER_TRAY_RETRY_ID` ở [src/window/mod.rs](src/window/mod.rs) và `TrayIcon::re_add` ở [src/tray.rs](src/tray.rs); đối chiếu `StartupApproved\Run` + tồn tại tệp ở [src/config.rs](src/config.rs); chuyển lệnh tự xóa trong [src/install.rs](src/install.rs) sang `.raw_arg("/S /C \"ping -n 2 127.0.0.1 >nul & del ...\"")` và luôn khởi chạy qua `explorer.exe` để giữ `Medium IL` (`0x2000`).
+- **Cách phòng tránh:** Không thoát im lặng tại điểm khởi động ứng dụng nền GUI, luôn xử lý `TaskbarCreated` cho `Shell_NotifyIconW`, dùng `ping` + `cmd.exe /S /C` khi tự xóa tệp `.exe` đang chạy và kiểm chứng chu trình cài đặt -> gỡ cài đặt -> cài đặt lại trên bản release thật.

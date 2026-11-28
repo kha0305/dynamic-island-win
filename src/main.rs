@@ -3,6 +3,7 @@
 mod anti;
 mod config;
 mod hud;
+mod install;
 mod json_mini;
 mod media;
 mod renderer;
@@ -13,6 +14,11 @@ mod updater;
 mod vsync;
 mod watcher;
 mod window;
+
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LPARAM, WPARAM};
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
@@ -92,6 +98,76 @@ fn enable_per_monitor_dpi_v2() {
     }
 }
 
+fn startup_log_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(base)
+            .join("WinDynamicIsland")
+            .join("startup.log"),
+    )
+}
+
+fn append_startup_log(message: &str) {
+    let Some(path) = startup_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let truncate = fs::metadata(&path).is_ok_and(|m| m.len() > 32 * 1024);
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!truncate)
+        .truncate(truncate)
+        .open(&path);
+    if let Ok(mut f) = file {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = writeln!(f, "[{ts}] {message}");
+    }
+}
+
+fn create_window_with_startup_retry() -> windows::core::Result<IslandWindow> {
+    const RETRY_DELAYS_MS: [u64; 7] = [400, 600, 800, 1000, 1200, 1500, 1500];
+    let mut attempt = 0usize;
+    loop {
+        match IslandWindow::create() {
+            Ok(win) => {
+                if attempt > 0 {
+                    append_startup_log(&format!(
+                        "Khởi tạo thành công sau {} lần thử lại lúc khởi động.",
+                        attempt
+                    ));
+                }
+                return Ok(win);
+            }
+            Err(err) => {
+                let Some(&delay_ms) = RETRY_DELAYS_MS.get(attempt) else {
+                    append_startup_log(&format!(
+                        "Thất bại sau {} lần thử khởi tạo: {err}",
+                        attempt + 1
+                    ));
+                    return Err(err);
+                };
+                append_startup_log(&format!(
+                    "Lần thử {} chưa tạo được cửa sổ ({err}); đợi {delay_ms} ms...",
+                    attempt + 1
+                ));
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+        }
+    }
+}
+
 fn run() -> windows::core::Result<()> {
     let post_update = std::env::args().any(|arg| arg == updater::POST_UPDATE_ARG);
     let _instance_guard = if post_update {
@@ -101,7 +177,7 @@ fn run() -> windows::core::Result<()> {
                 acquired = Some(guard);
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
         }
         let Some(guard) = acquired else {
             wake_existing_instance();
@@ -119,7 +195,7 @@ fn run() -> windows::core::Result<()> {
     updater::spawn_cleanup_old_binary();
     enable_per_monitor_dpi_v2();
     let _com = ComApartmentGuard::init();
-    let _window = IslandWindow::create()?;
+    let _window = create_window_with_startup_retry()?;
 
     let mut msg = MSG::default();
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
@@ -142,11 +218,17 @@ fn parse_anti_hook_arg() -> Option<String> {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == install::UNINSTALL_FLAG) {
+        let quiet = std::env::args().any(|arg| arg == install::QUIET_FLAG);
+        let code = install::run_uninstall_flow(quiet);
+        std::process::exit(code);
+    }
     if let Some(event_name) = parse_anti_hook_arg() {
         let code = anti::run_anti_hook_cli(&event_name);
         std::process::exit(code);
     }
     if let Err(err) = run() {
+        append_startup_log(&format!("Lỗi khởi tạo Win Dynamic Island: {err}"));
         eprintln!("Loi khoi tao Win Dynamic Island: {err}");
     }
 }

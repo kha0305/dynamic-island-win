@@ -471,10 +471,28 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #034 — Bộ Icon chính thức, sửa triệt để lỗi Startup và đóng gói song song Setup + Portable (`v0.3.4`)
+- **Thời gian thực hiện:** 2026-11-28T15:28:00+07:00
+- **Đặc tả & Kế hoạch:** [specs/setup-startup-icon/spec.md](specs/setup-startup-icon/spec.md), [specs/setup-startup-icon/plan.md](specs/setup-startup-icon/plan.md), [specs/setup-startup-icon/tasks.md](specs/setup-startup-icon/tasks.md).
+- **Phạm vi thay đổi:**
+  - [assets/app.ico](assets/app.ico) & [build.rs](build.rs) *(tạo mới)*: Tạo bộ biểu tượng đa kích thước (`16, 20, 24, 32, 48, 256` px) phong cách Liquid Glass squircle + Dynamic Island; viết trình sinh tài nguyên `.res` thuần Rust (`RT_GROUP_ICON`, `RT_ICON`, `RT_VERSION` `0.3.4`, `RT_MANIFEST` `asInvoker` + `Common-Controls 6.0` + `PerMonitorV2`) nhúng cho cả `win-dynamic-island` và `win-dynamic-island-setup`.
+  - [src/tray.rs](src/tray.rs) & [src/window/mod.rs](src/window/mod.rs): Gắn icon chính thức vào `WNDCLASSEXW` (`hIcon`/`hIconSm`) và `TrayIcon` (`LoadImageW` theo DPI); thu gọn menu ngữ cảnh khay hệ thống từ 16 mục phẳng xuống 7 mục chính (gom toàn bộ công tắc và `Màn hình hiển thị` vào menu con `Tùy chỉnh`); lắng nghe `RegisterWindowMessageW("TaskbarCreated")` + thêm `TIMER_TRAY_RETRY_ID` (`1500 ms` x 20 lượt) tự phục hồi biểu tượng khay khi Taskbar lên chậm hoặc Explorer restart; xử lý `WM_ENDSESSION`.
+  - [src/main.rs](src/main.rs) & [src/config.rs](src/config.rs): Bổ sung vòng lặp thử lại khởi tạo `create_window_with_startup_retry` (tối đa 8 lần, ghi `%LOCALAPPDATA%\WinDynamicIsland\startup.log` nếu có lỗi); nâng cấp `is_autostart_enabled()` kiểm tra tồn tại tệp `.exe` + trạng thái `Explorer\StartupApproved\Run` + `sync_autostart_path_if_needed()`.
+  - [src/install.rs](src/install.rs) & [src/bin/setup.rs](src/bin/setup.rs) *(tạo mới)*: Xây dựng trình cài đặt Win32 tiếng Việt `WinDynamicIsland-Setup.exe` (hỗ trợ cả GUI và `/S` / `--silent`, đổi thư mục cài qua `IFileOpenDialog`) cài vào `%LOCALAPPDATA%\Programs\WinDynamicIsland\win-dynamic-island.exe`, tự đóng êm rồi cưỡng bức kết thúc tiến trình `win-dynamic-island.exe` còn kẹt bằng `CreateToolhelp32Snapshot` + `TerminateProcess` để cài đè không báo lỗi, tạo lối tắt Start Menu + Desktop (`IShellLinkW`), đăng ký `Uninstall` trong Windows Settings (`--uninstall` / `--quiet`), khởi chạy app qua `explorer.exe` để giữ `Medium IL` (`0x2000`), và hỗ trợ tự xóa sạch khi gỡ cài đặt.
+  - [Cargo.toml](Cargo.toml), [Cargo.lock](Cargo.lock), [.github/workflows/release.yml](.github/workflows/release.yml), [README.md](README.md): Nâng phiên bản `0.3.4`, thêm binary `win-dynamic-island-setup`, bật `Win32_System_Com` & `Win32_System_Diagnostics_ToolHelp` và cập nhật CI phát hành song song cả bản Setup lẫn bản Portable.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **48/48** (`win-dynamic-island`) + **1/1** (`win-dynamic-island-setup`) tests đạt (`0.38s`).
+  - `cargo build --release --locked` & đóng gói `dist/`:
+    - [dist/win-dynamic-island.exe](dist/win-dynamic-island.exe): `971,776 bytes` (`SHA256=c9874e2272b899ee210de963573f0d7c53f506d5942c544fa9780a6a23bf7073`), `FileVersion=0.3.4.0`, `APP_ICON=32x32`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`.
+    - [dist/WinDynamicIsland-Setup.exe](dist/WinDynamicIsland-Setup.exe): `1,458,688 bytes` (`SHA256=687433c1107ee4e8271810eaa1fac18f415655f2464f331e880e0204f7e2f7c3`), `FileVersion=0.3.4.0`, `SETUP_ICON=32x32`, hỗ trợ chọn/đổi thư mục cài đặt qua `IFileOpenDialog` (`FOS_PICKFOLDERS`) và bố cục `AdjustWindowRectExForDpi` (`536x397`) hiển thị đầy đủ không cắt chữ.
+    - [dist/WinDynamicIsland-win64.zip](dist/WinDynamicIsland-win64.zip): `500,868 bytes`.
+  - Kiểm thử vòng lặp thật **Cài đặt -> Gỡ cài đặt (`--uninstall --quiet`) -> Cài đặt đè khi app đang chạy**: Gỡ cài đặt xóa sạch `EXE=False`, `DIR=False`, `SM_LNK=False`, `DK_LNK=False`, `ARP=False`, `RUN=False`, `PROCS=0`; cài đè lên tiến trình `PID 18296` đang kẹt không cửa sổ thành công với `SETUP_EXIT=0`, `OLD_18296_ALIVE=False`, khởi chạy lại `PID 21528` tại `%LOCALAPPDATA%\Programs\WinDynamicIsland\win-dynamic-island.exe` ở `Medium IL` (`0x2000`), `EMOJI_HITS=0`.
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã khắc phục triệt để các nguyên nhân rớt `DragLeave` và lệch trạng thái kéo thả, phát hành **`v0.3.3`** (`tag v0.3.3`, `854,016 bytes`), đồng bộ gói Portable `dist\` và chạy nền sẵn sàng để người dùng kiểm thử thực tế.
+- **Trạng thái hiện tại:** Đã hoàn tất phiên bản **`v0.3.4`** với bộ Icon chính thức, cơ chế Startup tin cậy ở `Medium IL`, menu khay hệ thống thu gọn và hai gói phân phối song song trong `dist/` (**Setup** `WinDynamicIsland-Setup.exe` và **Portable** `WinDynamicIsland-win64.zip` / `win-dynamic-island.exe`). Tiến trình `win-dynamic-island.exe` (`PID 21528`) đang chạy ổn định từ thư mục cài đặt `%LOCALAPPDATA%\Programs\WinDynamicIsland\` ở mức `0x2000` (`Medium IL`).
 - **Lưu ý cho phiên tiếp theo:**
-  - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
-  - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).
-  - Hook Anti (`~/.gemini/config/hooks.json`) chưa tự động ghi đè vào máy khi chưa kích hoạt; người dùng có thể bấm nút `"Hook Anti"` trong bảng `Settings` bất kỳ lúc nào để bật/tắt an toàn.
-- **Hạng mục tiếp theo (khi có yêu cầu):** Mở rộng thêm Pomodoro mini, theo dõi tài nguyên gọn hoặc hỗ trợ thư mục kéo nhanh theo ngữ cảnh nếu người dùng đề xuất thêm.
+  - Nếu biên dịch `WinDynamicIsland-Setup.exe` từ mã nguồn, cần build `win-dynamic-island` release trước và truyền đường dẫn qua biến môi trường `WDI_SETUP_PAYLOAD` (theo đúng cấu hình trong [.github/workflows/release.yml](.github/workflows/release.yml)).
+  - Khi muốn phát hành bản `v0.3.4` lên GitHub Releases, chỉ cần commit và đẩy tag `v0.3.4` lên `origin`.

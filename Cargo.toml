@@ -1,8 +1,17 @@
 [package]
 name = "win-dynamic-island"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2024"
+default-run = "win-dynamic-island"
 description = "Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ cho Windows 11"
+
+[[bin]]
+name = "win-dynamic-island"
+path = "src/main.rs"
+
+[[bin]]
+name = "win-dynamic-island-setup"
+path = "src/bin/setup.rs"
 
 [dependencies]
 windows-core = "0.62.2"
@@ -32,7 +41,9 @@ features = [
     "Win32_Networking_WinHttp",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
