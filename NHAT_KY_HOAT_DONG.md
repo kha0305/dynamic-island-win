@@ -462,6 +462,15 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #033 — Xử lý lỗi UIPI `High IL` chặn kéo thả Explorer và bổ sung quy chuẩn `Medium IL`
+- **Thời gian thực hiện:** 2026-11-28T14:38:30+07:00
+- **Phạm vi thay đổi:**
+  - [GEMINI.md](GEMINI.md) & [SO_TAY_KIEM_TRA_BUG.md](SO_TAY_KIEM_TRA_BUG.md) (`Lỗi #018`): Bổ sung quy chuẩn bắt buộc khởi chạy ứng dụng nền nhận OLE Drag-Drop ở mức `Medium IL` (`0x2000` qua `explorer.exe`), tránh thừa hưởng quyền Administrator (`0x3000`) khiến Windows UIPI chặn `IDropTarget::DragEnter` từ File Explorer.
+- **Kiểm chứng thực tế:**
+  - Khởi chạy lại `dist\win-dynamic-island.exe` (`v0.3.3`) qua `explorer.exe`: xác nhận `PID 10512` chạy ở `0x2000` (`Medium Mandatory Level`), trùng khớp `explorer.exe` (`0x2000`); người dùng đã thử thực tế và xác nhận hoạt động ổn định.
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
 - **Trạng thái hiện tại:** Đã khắc phục triệt để các nguyên nhân rớt `DragLeave` và lệch trạng thái kéo thả, phát hành **`v0.3.3`** (`tag v0.3.3`, `854,016 bytes`), đồng bộ gói Portable `dist\` và chạy nền sẵn sàng để người dùng kiểm thử thực tế.
 - **Lưu ý cho phiên tiếp theo:**

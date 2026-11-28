@@ -27,8 +27,8 @@
 | Thành phần | Đường dẫn | Trạng thái | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | Luật riêng dự án | `GEMINI.md` | HOÀN TẤT | Kế thừa `global_rules.md` + ràng buộc Win32/Rust |
-| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#032 gồm `v0.3.0`, `v0.3.1`, `v0.3.2` và **`v0.3.3`** (`#032`) |
-| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.3` và ghi nhận Lỗi #001–#017 |
+| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#033 gồm `v0.3.0`, `v0.3.1`, `v0.3.2`, **`v0.3.3`** (`#032`) và ghi nhận UIPI `Medium IL` (`#033`) |
+| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.3` và ghi nhận Lỗi #001–#018 |
 | Đặc tả tính năng | `specs/v03-shelf-anti-refactor/spec.md` (kế thừa `specs/dynamic-island/`..`ui-polish-v021/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ `v0.3.0`–`v0.3.3` |
 | Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT v0.3.3 | Đã hoàn thành toàn bộ `T1.1–T1.6`, `T2.1–T2.5`, `T3.1–T3.4` và các bản vá tới `v0.3.3` |
 | Mã nguồn & CI/CD | `Cargo.toml`, `.cargo/config.toml`, `src/**/*.rs`, `.github/workflows/release.yml` | ĐÃ PHÁT HÀNH v0.3.3 | `clippy --locked` sạch, `45/45` tests đạt (`0.34s`), `.exe` dung lượng `854,016 bytes`; đã đẩy nhánh `main` và tag `v0.3.3` lên `origin` |
