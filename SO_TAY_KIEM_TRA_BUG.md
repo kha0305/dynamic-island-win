@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --all-targets -- -D warnings`, 37/37 `cargo test`, `cargo build --release` (`v0.2.3`, `714,240 bytes`) và kiểm tra bản chạy nền thực tế trên Desktop (`PID 5944`).
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **44/44** `cargo test`, `cargo build --release` (`v0.3.0`, `841,728 bytes`, `SHA256=ffccb1d82a71111f4479575e09415ab6593154f991ff46cb84a06d1f92321646`, `VCRUNTIME_DEP=False`, `NV_MODULES=0`, `IDLE_CPU_2S_MS=0`) và chụp ảnh kiểm chứng trên màn hình FHD thật.
 
 ---
 

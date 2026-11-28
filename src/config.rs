@@ -106,6 +106,11 @@ pub fn parse_config(text: &str) -> AppConfig {
                     cfg.visualizer_enabled = b;
                 }
             }
+            "anti_monitor_enabled" => {
+                if let Some(b) = parse_bool(val) {
+                    cfg.anti_monitor_enabled = b;
+                }
+            }
             "monitor_index" => {
                 if let Ok(idx) = val.parse::<usize>() {
                     cfg.monitor_index = idx;
@@ -119,7 +124,7 @@ pub fn parse_config(text: &str) -> AppConfig {
 
 pub fn serialize_config(cfg: &AppConfig) -> String {
     format!(
-        "visible={}\nnotch_collapse_after_4s={}\nhud_volume_enabled={}\nhud_wheel_enabled={}\nhud_power_enabled={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nmonitor_index={}\n",
+        "visible={}\nnotch_collapse_after_4s={}\nhud_volume_enabled={}\nhud_wheel_enabled={}\nhud_power_enabled={}\nauto_hide_when_idle={}\nauto_hide_fullscreen={}\nvisualizer_enabled={}\nanti_monitor_enabled={}\nmonitor_index={}\n",
         cfg.visible,
         cfg.notch_collapse_after_4s,
         cfg.hud_volume_enabled,
@@ -128,6 +133,7 @@ pub fn serialize_config(cfg: &AppConfig) -> String {
         cfg.auto_hide_when_idle,
         cfg.auto_hide_fullscreen,
         cfg.visualizer_enabled,
+        cfg.anti_monitor_enabled,
         cfg.monitor_index,
     )
 }
@@ -253,6 +259,7 @@ mod tests {
             auto_hide_when_idle: true,
             auto_hide_fullscreen: false,
             visualizer_enabled: false,
+            anti_monitor_enabled: false,
             autostart: true,
             monitor_index: 2,
         };
@@ -266,6 +273,7 @@ mod tests {
         assert!(parsed.auto_hide_when_idle);
         assert!(!parsed.auto_hide_fullscreen);
         assert!(!parsed.visualizer_enabled);
+        assert!(!parsed.anti_monitor_enabled);
         assert_eq!(parsed.monitor_index, 2);
 
         let corrupted = "# comment\nbad_line\nmonitor_index=abc\nvisible=not_a_bool\nauto_hide_when_idle=1\n";

@@ -1,34 +1,36 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
-use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Media::Audio::Endpoints::{
     IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
 };
 use windows::Win32::Media::Audio::{
-    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, DEVICE_STATE_ACTIVE, EDataFlow, ERole,
-    IMMDevice, IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
-    MMDeviceEnumerator, eMultimedia, eRender,
-};
-use windows::Win32::System::Com::StructuredStorage::{
-    PROPVARIANT, PropVariantClear, PropVariantToStringAlloc,
+    AUDIO_VOLUME_NOTIFICATION_DATA, DEVICE_STATE, EDataFlow, ERole, IMMDevice,
+    IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
+    eMultimedia, eRender,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-    CoUninitialize, STGM_READ,
+    CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
 };
-use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
-use windows::core::{BOOL, GUID, PCWSTR, PWSTR, implement};
+use windows::core::{BOOL, GUID, PCWSTR, implement};
+
+mod policy_config;
+mod power;
+#[cfg(test)]
+mod tests;
+
+use policy_config::{
+    enumerate_output_devices, policy_com, read_device_friendly_name, read_device_id,
+};
+pub use power::{GUID_ACDC_POWER_SOURCE, PowerSnapshot, PowerStateTracker, read_system_power_status};
 
 pub const WM_APP_HUD_EVENT: u32 = WM_APP + 7;
 pub const HUD_EXPIRE_DELAY_MS: u32 = 2_000;
 pub const WHEEL_STEP_DELTA: i32 = 40;
 pub const WHEEL_VOLUME_STEP: f32 = 0.01;
 
-/// Mã GUID chuẩn của `GUID_ACDC_POWER_SOURCE` dùng cho `RegisterPowerSettingNotification`.
-pub const GUID_ACDC_POWER_SOURCE: GUID = GUID::from_u128(0x5d3e9a59_e9d5_4b00_a6bd_ff34ff516548);
 /// Ngữ cảnh riêng giúp phân biệt thao tác từ chính app để không tự dội lặp HUD.
 const APP_VOLUME_EVENT_CONTEXT: GUID = GUID::from_u128(0x9a4b82e1_7f3c_4c68_b29d_317c8d6a5013);
 
@@ -52,23 +54,6 @@ impl Default for VolumeSnapshot {
             level: 0.5,
             muted: false,
             available: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PowerSnapshot {
-    pub has_battery: bool,
-    pub on_ac: bool,
-    pub percent: Option<u8>,
-}
-
-impl Default for PowerSnapshot {
-    fn default() -> Self {
-        Self {
-            has_battery: false,
-            on_ac: true,
-            percent: None,
         }
     }
 }
@@ -143,110 +128,6 @@ pub fn apply_volume_step(current: f32, steps: i32) -> f32 {
     clamp_volume_ratio(base + delta)
 }
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PowerStateTracker {
-    last: Option<PowerSnapshot>,
-    warned_low_15: bool,
-    warned_low_7: bool,
-}
-
-impl PowerStateTracker {
-    /// Kích hoạt tức thời theo thông báo AC/DC từ `WM_POWERBROADCAST` không cần chờ ACPI EC.
-    pub fn evaluate_ac_hint(&mut self, on_ac: bool) -> Option<(PowerSnapshot, bool)> {
-        let mut snap = self.last?;
-        if !snap.has_battery || snap.on_ac == on_ac {
-            return None;
-        }
-        snap.on_ac = on_ac;
-        if on_ac {
-            self.warned_low_15 = false;
-            self.warned_low_7 = false;
-        }
-        self.last = Some(snap);
-        Some((snap, false))
-    }
-
-    pub fn last_snapshot(&self) -> Option<PowerSnapshot> {
-        self.last
-    }
-
-    /// Trả về `Some((snapshot, is_low_battery_alert))` chỉ khi đổi trạng thái sạc hoặc tụt xuống mốc pin yếu.
-    pub fn evaluate_update(&mut self, next: PowerSnapshot) -> Option<(PowerSnapshot, bool)> {
-        let Some(prev) = self.last else {
-            self.last = Some(next);
-            if next.has_battery && !next.on_ac
-                && let Some(pct) = next.percent
-            {
-                if pct <= 15 {
-                    self.warned_low_15 = true;
-                }
-                if pct <= 7 {
-                    self.warned_low_7 = true;
-                }
-            }
-            return None;
-        };
-
-        self.last = Some(next);
-        if !next.has_battery {
-            self.warned_low_15 = false;
-            self.warned_low_7 = false;
-            return None;
-        }
-
-        if prev.on_ac != next.on_ac {
-            if next.on_ac {
-                self.warned_low_15 = false;
-                self.warned_low_7 = false;
-            }
-            return Some((next, false));
-        }
-
-        if !next.on_ac
-            && let Some(pct) = next.percent
-        {
-            if pct <= 7 && !self.warned_low_7 {
-                self.warned_low_15 = true;
-                self.warned_low_7 = true;
-                return Some((next, true));
-            }
-            if pct <= 15 && !self.warned_low_15 {
-                self.warned_low_15 = true;
-                return Some((next, true));
-            }
-            if pct > 20 {
-                self.warned_low_15 = false;
-                self.warned_low_7 = false;
-            }
-        }
-
-        None
-    }
-}
-
-pub fn read_system_power_status() -> PowerSnapshot {
-    let mut status = SYSTEM_POWER_STATUS::default();
-    if unsafe { GetSystemPowerStatus(&mut status) }.is_err() {
-        return PowerSnapshot::default();
-    }
-    let has_battery = (status.BatteryFlag & 128) == 0 && status.BatteryFlag != 255;
-    let on_ac = if status.ACLineStatus == 255 {
-        true
-    } else {
-        status.ACLineStatus == 1
-    };
-    let percent = if status.BatteryLifePercent <= 100 {
-        Some(status.BatteryLifePercent)
-    } else {
-        None
-    };
-    PowerSnapshot {
-        has_battery,
-        on_ac,
-        percent,
-    }
-}
-
 enum AudioThreadMsg {
     Command(AudioCommand),
     ReattachDefaultDevice,
@@ -256,167 +137,6 @@ enum AudioThreadMsg {
         muted: bool,
         is_self_event: bool,
     },
-}
-
-struct CoTaskMemPwstr(PWSTR);
-
-impl CoTaskMemPwstr {
-    fn to_non_empty_string(&self) -> Option<String> {
-        if self.0.is_null() {
-            return None;
-        }
-        unsafe { self.0.to_string().ok() }
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    }
-}
-
-impl Drop for CoTaskMemPwstr {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { CoTaskMemFree(Some(self.0.0.cast())) };
-        }
-    }
-}
-
-struct PropVarGuard(PROPVARIANT);
-
-impl Drop for PropVarGuard {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = PropVariantClear(&mut self.0);
-        }
-    }
-}
-
-#[allow(dead_code, non_snake_case, non_camel_case_types)]
-mod policy_com {
-    use core::ffi::c_void;
-    use windows::Win32::Media::Audio::{ERole, eCommunications, eConsole, eMultimedia};
-    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance};
-    use windows::core::{GUID, HRESULT, HSTRING, IUnknown, IUnknown_Vtbl, PCWSTR, interface};
-
-    /// CLSID `CPolicyConfigClient` của Windows Core Audio để đổi thiết bị phát mặc định.
-    const CLSID_CPOLICY_CONFIG_CLIENT: GUID =
-        GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
-
-    #[interface("f8679f50-850a-41cf-9c72-430f290290c8")]
-    pub(super) unsafe trait IPolicyConfig: IUnknown {
-        fn GetMixFormat(&self, psz_device_name: PCWSTR, pp_format: *mut *mut c_void) -> HRESULT;
-        fn GetDeviceFormat(
-            &self,
-            psz_device_name: PCWSTR,
-            b_default: i32,
-            pp_format: *mut *mut c_void,
-        ) -> HRESULT;
-        fn ResetDeviceFormat(&self, psz_device_name: PCWSTR) -> HRESULT;
-        fn SetDeviceFormat(
-            &self,
-            psz_device_name: PCWSTR,
-            p_endpoint_format: *mut c_void,
-            p_mix_format: *mut c_void,
-        ) -> HRESULT;
-        fn GetProcessingPeriod(
-            &self,
-            psz_device_name: PCWSTR,
-            b_default: i32,
-            pmft_default: *mut i64,
-            pmft_min: *mut i64,
-        ) -> HRESULT;
-        fn SetProcessingPeriod(&self, psz_device_name: PCWSTR, pmft_period: *mut i64) -> HRESULT;
-        fn GetShareMode(&self, psz_device_name: PCWSTR, p_mode: *mut c_void) -> HRESULT;
-        fn SetShareMode(&self, psz_device_name: PCWSTR, p_mode: *mut c_void) -> HRESULT;
-        fn GetPropertyValue(
-            &self,
-            psz_device_name: PCWSTR,
-            key: *const c_void,
-            pv: *mut c_void,
-        ) -> HRESULT;
-        fn SetPropertyValue(
-            &self,
-            psz_device_name: PCWSTR,
-            key: *const c_void,
-            pv: *const c_void,
-        ) -> HRESULT;
-        fn SetDefaultEndpoint(&self, psz_device_name: PCWSTR, role: ERole) -> HRESULT;
-        fn SetEndpointVisibility(&self, psz_device_name: PCWSTR, b_visible: i32) -> HRESULT;
-    }
-
-    pub(super) fn create_policy_config() -> windows::core::Result<IPolicyConfig> {
-        unsafe { CoCreateInstance(&CLSID_CPOLICY_CONFIG_CLIENT, None, CLSCTX_ALL) }
-    }
-
-    pub(super) fn set_default_audio_device(device_id: &str) -> windows::core::Result<()> {
-        let policy = create_policy_config()?;
-        let wide_id = HSTRING::from(device_id);
-        for role in [eConsole, eMultimedia, eCommunications] {
-            unsafe { policy.SetDefaultEndpoint(PCWSTR(wide_id.as_ptr()), role) }.ok()?;
-        }
-        Ok(())
-    }
-}
-
-fn read_device_id(device: &IMMDevice) -> Option<String> {
-    let raw = unsafe { device.GetId() }.ok()?;
-    CoTaskMemPwstr(raw).to_non_empty_string()
-}
-
-fn read_device_friendly_name(device: &IMMDevice) -> String {
-    if let Ok(store) = unsafe { device.OpenPropertyStore(STGM_READ) }
-        && let Ok(pv) = unsafe { store.GetValue(&PKEY_Device_FriendlyName) }
-    {
-        let guard = PropVarGuard(pv);
-        if let Ok(pwstr) = unsafe { PropVariantToStringAlloc(&guard.0) }
-            && let Some(name) = CoTaskMemPwstr(pwstr).to_non_empty_string()
-        {
-            return name;
-        }
-    }
-    String::from("Thiết bị âm thanh")
-}
-
-pub fn sort_audio_devices(devices: &mut [AudioOutputDevice]) {
-    devices.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.id.cmp(&b.id))
-    });
-}
-
-fn enumerate_output_devices(enumerator: &IMMDeviceEnumerator) -> (Vec<AudioOutputDevice>, Option<String>) {
-    let default_id = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }
-        .ok()
-        .and_then(|dev| read_device_id(&dev));
-
-    let Ok(collection) = (unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) })
-    else {
-        return (Vec::new(), None);
-    };
-    let count = unsafe { collection.GetCount() }.unwrap_or(0);
-    let mut devices = Vec::with_capacity(count as usize);
-    let mut default_name = None;
-
-    for idx in 0..count {
-        let Ok(dev) = (unsafe { collection.Item(idx) }) else {
-            continue;
-        };
-        let Some(id) = read_device_id(&dev) else {
-            continue;
-        };
-        let name = read_device_friendly_name(&dev);
-        let is_default = default_id.as_deref() == Some(id.as_str());
-        if is_default {
-            default_name = Some(name.clone());
-        }
-        devices.push(AudioOutputDevice {
-            id,
-            name,
-            is_default,
-        });
-    }
-    sort_audio_devices(&mut devices);
-    (devices, default_name)
 }
 
 #[implement(IAudioEndpointVolumeCallback)]
@@ -861,208 +581,4 @@ fn run_audio_worker(
     drop(attached);
     drop(_dev_guard);
     drop(com);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wheel_accumulator_handles_detents_touchpad_and_reversals() {
-        let mut acc = WheelVolumeAccumulator::default();
-        assert_eq!(acc.push_delta(120), 3);
-        assert_eq!(acc.push_delta(-240), -6);
-
-        // Touchpad cuộn mịn: nhiều gói nhỏ cộng dồn đủ 40 sinh 1 bước, rung tay -2 không xóa tích lũy.
-        assert_eq!(acc.push_delta(15), 0);
-        assert_eq!(acc.push_delta(15), 0);
-        assert_eq!(acc.push_delta(-2), 0);
-        assert_eq!(acc.push_delta(15), 1);
-        assert_eq!(acc.push_delta(20), 0);
-
-        // Đảo chiều rõ ràng: phần dư cũ (+23) bị xóa sạch.
-        assert_eq!(acc.push_delta(-30), 0);
-        assert_eq!(acc.push_delta(-15), -1);
-
-        acc.push_delta(30);
-        acc.reset();
-        assert_eq!(acc.push_delta(15), 0);
-    }
-
-    #[test]
-    fn volume_step_clamps_bounds_and_handles_bursts() {
-        assert!((apply_volume_step(0.50, 3) - 0.53).abs() < 1e-5);
-        assert!((apply_volume_step(0.99, 5) - 1.0).abs() < 1e-5);
-        assert!((apply_volume_step(0.01, -5) - 0.0).abs() < 1e-5);
-        assert!((apply_volume_step(0.50, 999) - 1.0).abs() < 1e-5);
-        assert_eq!(clamp_volume_ratio(f32::NAN), 0.0);
-    }
-
-    #[test]
-    fn power_tracker_alerts_only_on_ac_toggle_or_low_thresholds() {
-        let mut tracker = PowerStateTracker::default();
-        // Lần đọc đầu tiên không pop HUD.
-        assert!(
-            tracker
-                .evaluate_update(PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(80),
-                })
-                .is_none()
-        );
-        // Tụt từng % bình thường không spam HUD.
-        assert!(
-            tracker
-                .evaluate_update(PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(79),
-                })
-                .is_none()
-        );
-        // Cắm sạc -> pop HUD sạc.
-        assert_eq!(
-            tracker.evaluate_update(PowerSnapshot {
-                has_battery: true,
-                on_ac: true,
-                percent: Some(79),
-            }),
-            Some((
-                PowerSnapshot {
-                    has_battery: true,
-                    on_ac: true,
-                    percent: Some(79),
-                },
-                false
-            ))
-        );
-        // Đang cắm sạc tăng % không spam.
-        assert!(
-            tracker
-                .evaluate_update(PowerSnapshot {
-                    has_battery: true,
-                    on_ac: true,
-                    percent: Some(85),
-                })
-                .is_none()
-        );
-        // Rút sạc -> pop HUD dùng pin.
-        assert_eq!(
-            tracker.evaluate_update(PowerSnapshot {
-                has_battery: true,
-                on_ac: false,
-                percent: Some(25),
-            }),
-            Some((
-                PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(25),
-                },
-                false
-            ))
-        );
-        // Tụt xuống <= 15% lần đầu -> cảnh báo pin yếu.
-        assert_eq!(
-            tracker.evaluate_update(PowerSnapshot {
-                has_battery: true,
-                on_ac: false,
-                percent: Some(15),
-            }),
-            Some((
-                PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(15),
-                },
-                true
-            ))
-        );
-        // Tụt tiếp 14% -> không nhắc lại cho tới ngưỡng <= 7%.
-        assert!(
-            tracker
-                .evaluate_update(PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(14),
-                })
-                .is_none()
-        );
-        assert_eq!(
-            tracker.evaluate_update(PowerSnapshot {
-                has_battery: true,
-                on_ac: false,
-                percent: Some(7),
-            }),
-            Some((
-                PowerSnapshot {
-                    has_battery: true,
-                    on_ac: false,
-                    percent: Some(7),
-                },
-                true
-            ))
-        );
-
-        // AC hint tu PBT_POWERSETTINGCHANGE bat HUD tuc thi va khong bi spam trung khi RefreshPower ve cung on_ac.
-        assert_eq!(
-            tracker.evaluate_ac_hint(true),
-            Some((
-                PowerSnapshot {
-                    has_battery: true,
-                    on_ac: true,
-                    percent: Some(7),
-                },
-                false
-            ))
-        );
-        assert!(
-            tracker
-                .evaluate_update(PowerSnapshot {
-                    has_battery: true,
-                    on_ac: true,
-                    percent: Some(8),
-                })
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn audio_devices_sort_and_policy_config_com_init() {
-        let mut items = vec![
-            AudioOutputDevice {
-                id: String::from("id-2"),
-                name: String::from("Speakers (Realtek)"),
-                is_default: false,
-            },
-            AudioOutputDevice {
-                id: String::from("id-1"),
-                name: String::from("headphones (USB)"),
-                is_default: true,
-            },
-        ];
-        sort_audio_devices(&mut items);
-        assert_eq!(items[0].id, "id-1");
-        assert_eq!(items[1].id, "id-2");
-
-        let com = ComMtaGuard(unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok());
-        let enumerator: IMMDeviceEnumerator =
-            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.expect("enumerator");
-        let (real_devices, _def) = enumerate_output_devices(&enumerator);
-        println!("Detected {} active playback devices", real_devices.len());
-        for d in &real_devices {
-            assert!(!d.id.is_empty());
-            assert!(!d.name.is_empty());
-        }
-        let policy = policy_com::create_policy_config();
-        assert!(policy.is_ok(), "IPolicyConfig CoCreateInstance failed: {policy:?}");
-        if let Some(def) = real_devices.iter().find(|d| d.is_default) {
-            let res = policy_com::set_default_audio_device(&def.id);
-            assert!(res.is_ok(), "IPolicyConfig::SetDefaultEndpoint failed on current default: {res:?}");
-        }
-        drop(policy);
-        drop(enumerator);
-        drop(com);
-    }
 }

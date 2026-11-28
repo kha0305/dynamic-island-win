@@ -382,11 +382,29 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - Kiểm tra PE Imports & ký tự: `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, không có DLL thừa.
   - Đo kiểm runtime bản `dist\win-dynamic-island.exe` (`PID 5944` chạy nền trên Desktop): sau khi ổn định qua nhịp co giãn khởi động, `SETTLED_IDLE_CPU_2S_MS=0`, `WS_MB=43.69`, `PRIV_MB=18.48`, `HANDLES=400`, `0` module NVIDIA (`USERENV.dll` trùng chuỗi con `nv`), `AMD_MODULES=4`; ảnh chụp thật `1920x1080` xác nhận chấm `live` xanh lục hiển thị sắc nét cạnh `v0.2.3` không cắt chữ.
 
+### Mục #028 — Hoàn tất 3 chặng `v0.3.0`: Tối ưu tách module, Theo dõi Anti (10 trạng thái) & File Shelf cạnh Dynamic trên FHD
+- **Thời gian thực hiện:** 2026-11-28T11:12:00+07:00
+- **Đặc tả & Kế hoạch:** [specs/v03-shelf-anti-refactor/spec.md](specs/v03-shelf-anti-refactor/spec.md), [specs/v03-shelf-anti-refactor/plan.md](specs/v03-shelf-anti-refactor/plan.md), [specs/v03-shelf-anti-refactor/tasks.md](specs/v03-shelf-anti-refactor/tasks.md).
+- **Chặng 1 — Tối ưu và tách nhỏ toàn bộ module:**
+  - Tách các tệp đơn khối thành cấu trúc theo vai trò: [src/json_mini.rs](src/json_mini.rs) (trích xuất bộ parser JSON không phụ thuộc + `sha256_hex` khỏi [src/updater.rs](src/updater.rs)), `src/hud/{mod,policy_config,power,tests}.rs`, `src/state/{mod,animator,hitboxes,tests}.rs`, `src/renderer/{mod,compositor,theme,media_views,expanded_view,hud_views,settings_views,anti_view,shelf_view,tests}.rs`, và `src/window/{mod,modes,input,workers,tests}.rs`; gỡ 8 feature bắc cầu dư thừa trong [Cargo.toml](Cargo.toml).
+- **Chặng 2 — Theo dõi Anti (`agy CLI`, `Anti IDE`, `Anti app`):**
+  - [src/anti.rs](src/anti.rs) & [src/main.rs](src/main.rs): Định nghĩa đầy đủ 10 trạng thái (`Đang đọc dự án`, `Đang phân tích`, `Đang code`, `Đang test`, `Đang build`, `Đang chờ duyệt`, `Đang sửa lỗi`, `Bị lỗi`, `Đã hủy`, `Đã xong`) dùng chung 1 tệp JSON cục bộ `%LOCALAPPDATA%\WinDynamicIsland\anti-progress.json` ghi atomic; tích hợp cổng `--anti-hook <EVENT>`, bộ cài/gỡ an toàn vào `~/.gemini/config/hooks.json` (khóa `"win-dynamic-island-status"` + backup `.json.bak`, không dùng `PreToolUse` để không can thiệp quyền duyệt lệnh), suy luận tool đang chạy qua đuôi `transcript.jsonl`, và theo dõi sự kiện Win32 `ReadDirectoryChangesW` (0% CPU khi rảnh).
+  - [src/watcher.rs](src/watcher.rs), [src/renderer/anti_view.rs](src/renderer/anti_view.rs) & `Settings`: Phát hiện foreground là `agy` / `Antigravity` để chỉ hiện tiến độ Anti khi người dùng chuyển sang app khác; ưu tiên Anti khi đang chạy song song media; vòng xoay 6 chấm mượt, tự giữ trạng thái kết thúc 4 giây; thêm nút bật/tắt `Theo dõi Anti` và `Cài/Gỡ Hook Anti` trong `Settings` (`424 x 398 DIP`).
+- **Chặng 3 — File Shelf cạnh Dynamic trên màn hình FHD (`1920x1080`):**
+  - [src/state/mod.rs](src/state/mod.rs), [src/state/hitboxes.rs](src/state/hitboxes.rs), [src/renderer/compositor.rs](src/renderer/compositor.rs) & [src/window/modes.rs](src/window/modes.rs): Mở rộng `MAX_SURFACE_WIDTH_DIP = 1040.0` giữ Dynamic căn giữa tâm FHD và đặt khay tệp ngay bên phải cách `10 DIP`; đồng bộ 2 lớp kính mờ `WinRtBackdropLayer` trên cùng `Compositor` + `CompositionDrawingSurface`, hợp vùng xuyên chuột qua GDI `CombineRgn(..., RGN_OR)`.
+  - [src/shelf.rs](src/shelf.rs), [src/main.rs](src/main.rs), [src/renderer/shelf_view.rs](src/renderer/shelf_view.rs) & [src/window/input.rs](src/window/input.rs): Chuyển COM apartment sang `OleInitialize`/`OleUninitialize`, cài `IDropTarget` nhận kéo thả `CF_HDROP`, `IDropSource` + `IDataObject` (`DROPFILES` đa thư mục) + `DoDragDrop` kéo thả hai chiều ra ứng dụng khác, tickbox từng dòng + `"Chọn tất cả"`, ẩn hoàn toàn nút xóa khi `selected == 0` và chỉ hiện `Delete All` khi `selected >= 1` (dọn danh sách khay, giữ nguyên tuyệt đối tệp gốc trên đĩa).
+- **Kiểm chứng thực tế `v0.3.0`:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test -- --nocapture`: **44/44** tests đạt (`0.57s`), bao gồm GPU offscreen contrast (`5.34:1`), `AntiProgressSnapshot` & hook merge, `CF_HDROP` đa thư mục roundtrip, `ShelfState` tickbox/Delete All, và tương tác Win32 `HWND`.
+  - `cargo build --release`: Tạo bản thực thi Portable `target\release\win-dynamic-island.exe` (**`841,728 bytes`**), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` (`ffccb1d82a71111f4479575e09415ab6593154f991ff46cb84a06d1f92321646`) và `dist\WinDynamicIsland-win64.zip` (`401,766 bytes`).
+  - Kiểm tra PE & runtime `dist\win-dynamic-island.exe` (`PID 2576`): `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `IDLE_CPU_2S_MS=0`, `WS_MB=50.34`, `PRIV_MB=20.64`, `HANDLES=549`, `NV_MODULES=0`, `AMD_MODULES=3`; ảnh chụp thực tế FHD xác nhận hiển thị sắc nét `Antigravity · Đang phân tích` kèm vòng chấm xoay và `Khay tệp` ở cạnh phải.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn tất tối ưu, kiểm thử, đóng gói và phát hành **v0.2.3** lên GitHub (`tag v0.2.3`, `714,240 bytes`), đồng bộ gói Portable `dist/`, dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 5944`).
+- **Trạng thái hiện tại:** Đã hoàn tất 3 chặng, kiểm thử sạch, đóng gói và phát hành **v0.3.0** lên GitHub (`tag v0.3.0`, `841,728 bytes`), đồng bộ gói Portable `dist/`, dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định.
 - **Lưu ý cho phiên tiếp theo:**
   - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
   - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).
-- **Hạng mục tiếp theo (khi có yêu cầu):** Tiếp tục Giai đoạn mở rộng (`v0.3`) theo [specs/dynamic-island/spec.md](specs/dynamic-island/spec.md) như File Shelf kéo thả tệp tạm, Pomodoro mini, theo dõi phần cứng tối giản hoặc Quick Actions.
+  - Hook Anti (`~/.gemini/config/hooks.json`) chưa tự động ghi đè vào máy khi chưa kích hoạt; người dùng có thể bấm nút `"Hook Anti"` trong bảng `Settings` bất kỳ lúc nào để bật/tắt an toàn.
+- **Hạng mục tiếp theo (khi có yêu cầu):** Mở rộng thêm Pomodoro mini, theo dõi tài nguyên gọn hoặc hỗ trợ thư mục kéo nhanh theo ngữ cảnh nếu người dùng đề xuất thêm.

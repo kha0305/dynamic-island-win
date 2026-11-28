@@ -1,10 +1,13 @@
 use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -12,10 +15,11 @@ use windows::Win32::UI::Shell::{
     QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN, SHQueryUserNotificationState,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetForegroundWindow, GetWindowRect, IsIconic,
-    IsWindowVisible, PostMessageW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
+    EVENT_SYSTEM_FOREGROUND, GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PWSTR};
 
 pub const WM_APP_FOREGROUND_CHANGED: u32 = WM_APP + 4;
 const MONITORINFOF_PRIMARY: u32 = 1;
@@ -289,9 +293,90 @@ pub fn is_rect_fullscreen(
     wl <= ml && wt <= mt && wr >= mr && wb >= mb
 }
 
+pub fn is_anti_process_or_title(exe_name: &str, window_title: &str) -> bool {
+    let exe = exe_name.trim().to_ascii_lowercase();
+    if exe.contains("agy") || exe.contains("antigravity") {
+        return true;
+    }
+    let is_terminal = matches!(
+        exe.as_str(),
+        "windowsterminal.exe"
+            | "cmd.exe"
+            | "powershell.exe"
+            | "pwsh.exe"
+            | "conhost.exe"
+            | "alacritty.exe"
+            | "wezterm-gui.exe"
+            | "mintty.exe"
+            | "code.exe"
+    );
+    if is_terminal {
+        let title = window_title.trim().to_ascii_lowercase();
+        return title.contains("agy") || title.contains("antigravity");
+    }
+    false
+}
+
+pub fn is_foreground_anti_app(island_hwnd: HWND) -> bool {
+    let fg = unsafe { GetForegroundWindow() };
+    if fg.is_invalid() || fg == island_hwnd {
+        return false;
+    }
+    let mut pid = 0_u32;
+    let _ = unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
+    let exe_name = if pid != 0
+        && let Ok(proc_handle) = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+    {
+        let mut buf = [0_u16; 520];
+        let mut len = buf.len() as u32;
+        let ok = unsafe {
+            QueryFullProcessImageNameW(
+                proc_handle,
+                PROCESS_NAME_FORMAT(0),
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+        };
+        unsafe {
+            let _ = CloseHandle(proc_handle);
+        }
+        if ok.is_ok() && len > 0 {
+            let full = String::from_utf16_lossy(&buf[..len as usize]);
+            std::path::Path::new(&full)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    let mut title_buf = [0_u16; 256];
+    let title_len = unsafe { GetWindowTextW(fg, &mut title_buf) };
+    let title = if title_len > 0 {
+        String::from_utf16_lossy(&title_buf[..title_len as usize])
+    } else {
+        String::new()
+    };
+    is_anti_process_or_title(&exe_name, &title)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anti_foreground_matcher_recognizes_cli_ide_and_app() {
+        assert!(is_anti_process_or_title("agy.exe", ""));
+        assert!(is_anti_process_or_title("Antigravity.exe", "Workspace"));
+        assert!(is_anti_process_or_title(
+            "WindowsTerminal.exe",
+            "Administrator: agy"
+        ));
+        assert!(!is_anti_process_or_title("chrome.exe", "Antigravity docs"));
+    }
 
     #[test]
     fn fullscreen_rect_detection_handles_maximized_and_multi_monitor() {

@@ -1,9 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod anti;
 mod config;
 mod hud;
+mod json_mini;
 mod media;
 mod renderer;
+mod shelf;
 mod state;
 mod tray;
 mod updater;
@@ -12,7 +15,7 @@ mod watcher;
 mod window;
 
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LPARAM, WPARAM};
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -68,7 +71,7 @@ struct ComApartmentGuard(bool);
 
 impl ComApartmentGuard {
     fn init() -> Self {
-        let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+        let initialized = unsafe { OleInitialize(None) }.is_ok();
         Self(initialized)
     }
 }
@@ -76,7 +79,7 @@ impl ComApartmentGuard {
 impl Drop for ComApartmentGuard {
     fn drop(&mut self) {
         if self.0 {
-            unsafe { CoUninitialize() };
+            unsafe { OleUninitialize() };
         }
     }
 }
@@ -128,7 +131,21 @@ fn run() -> windows::core::Result<()> {
     Ok(())
 }
 
+fn parse_anti_hook_arg() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == anti::ANTI_HOOK_FLAG {
+            return Some(args.next().unwrap_or_else(|| String::from("PostInvocation")));
+        }
+    }
+    None
+}
+
 fn main() {
+    if let Some(event_name) = parse_anti_hook_arg() {
+        let code = anti::run_anti_hook_cli(&event_name);
+        std::process::exit(code);
+    }
     if let Err(err) = run() {
         eprintln!("Loi khoi tao Win Dynamic Island: {err}");
     }
