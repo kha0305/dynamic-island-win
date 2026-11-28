@@ -472,7 +472,11 @@ pub fn shelf_pill_rect(
 
     let panel_w = 264.0;
     let left = raw_left.min(super::MAX_SURFACE_WIDTH_DIP - panel_w - 6.0);
-    let top = pill.top.max(6.0);
+    let top = if mode == IslandMode::Slim {
+        pill.top.max(2.0)
+    } else {
+        pill.top.max(6.0)
+    };
     let visible = item_count.min(MAX_SHELF_VISIBLE_ROWS);
     let body_h = if visible == 0 {
         70.0

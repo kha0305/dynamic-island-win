@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **45/45** `cargo test --locked`, `cargo build --release --locked` (`v0.3.2`, `849,920 bytes`, `SHA256=3d492c97009fd7e9b52994e4e1e07911e7594a4a4ce323092a0d6b47c26cd0a1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`).
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --locked --all-targets -- -D warnings`, **45/45** `cargo test --locked`, `cargo build --release --locked` (`v0.3.3`, `854,016 bytes`, `SHA256=6fc14d2360b60743415b633d493baf63b36577cca0aa96ab472c3466ea25ad9f`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `NV_MODULES=0`, `EMOJI_HITS=0`).
 
 ---
 
@@ -134,3 +134,13 @@
 - **Nguyên nhân gốc rễ:** Thiếu `Seek` đọc phần đuôi tệp ở `src/anti.rs`; thiếu kiểm tra chế độ cho phép Khay tệp ở `src/window/workers.rs`; và thứ tự xóa `mouse_tracked = false` trước `sync_pointer_presence()` ở `src/window/input.rs`.
 - **Cách sửa:** Giới hạn đọc tối đa `128 KiB` cuối tệp trong `src/anti.rs` (`infer_state_from_transcript_tail`); thêm `shelf_allowed_in_current_mode()` tại `src/window/modes.rs` và giữ đồng bộ trạng thái `shelf.open` tại `src/window/workers.rs`; tách `finish_shelf_drag_out_with_presence` để gọi `handle_mouse_leave()` trực tiếp khi con trỏ kết thúc ngoài đảo/khay tại `src/window/input.rs`. Bổ sung unit test ở `src/anti.rs` và bước #17 ở `src/window/tests.rs`.
 - **Cách phòng tránh:** Luôn dùng đọc phần đuôi (`SeekFrom::Start`) cho log JSONL tăng dần theo thời gian, chặn cập nhật trạng thái UI phụ theo chế độ hiện hành (`shelf_allowed_in_current_mode`), và kiểm tra con trỏ thực tế trước khi đặt lại cờ `mouse_tracked`.
+
+### Lỗi #017: Đứt `DragLeave` qua khe `10 DIP`, tụt mép `Slim`, timer co đảo giữa lúc kéo và test ghi đè `shelf-items.txt` (`v0.3.3`)
+- **Hiện tượng lỗi:** Khi kéo tệp từ Explorer qua Dynamic Island rồi chuyển hướng sang `"Kéo thả tệp vào đây"` lúc `Khay tệp` vừa mở, con trỏ vừa qua khe hở `10 px` lập tức đóng khay giữa chừng; bật `Gọn mép` (`Slim`) có lúc tụt vùng mép `4 DIP` (`top = 2 -> 6`) hoặc timer `4s`/`5s` tự thu nhỏ đảo trong khi Explorer giữ mouse capture; kéo đè qua `Settings`/`Notice` không bung `Khay tệp`; và `cargo test` ghi đè dữ liệu tạm vào `%LOCALAPPDATA%\WinDynamicIsland\shelf-items.txt`.
+- **Nguyên nhân gốc rễ:**
+  - `SetWindowRgn` + `handle_nchittest` để trống khe `10 DIP` giữa đảo và `Khay tệp` ngay cả trong lúc đang kéo tệp, và `WM_APP_SHELF_HOVER(0)` đóng `shelf_auto_opened_by_drag` tức thời không có độ trễ.
+  - `shelf_pill_rect` dùng `top = pill.top.max(6.0)` khiến `Slim` (dock `top = 2.0`) bị hụt mép trên khi mở.
+  - `handle_compact_to_notch_timer` / `handle_auto_collapse_timer` / `handle_anti_expire_timer` chỉ kiểm tra `mouse_tracked` (vốn bằng `false` suốt phiên OLE `DoDragDrop`).
+  - `handle_shelf_drag_hover` / `handle_shelf_drop_paths` bỏ qua khi đang mở `Settings`/`AudioDevices`/`Notice`; và `config_file_path()` dùng `%LOCALAPPDATA%` cả khi chạy test.
+- **Cách sửa:** Bổ sung `active_drag_bridge_rect` nối liền khe `10 DIP` trong `handle_nchittest`, `is_cursor_actually_over_pill` và `update_window_region` suốt lúc kéo; thêm `TIMER_SHELF_DRAG_LEAVE_ID` (`180 ms`); đặt `top = pill.top.max(2.0)` cho `Slim` tại [src/state/hitboxes.rs](src/state/hitboxes.rs); hoãn các timer thu gọn khi `is_shelf_drag_active()`; tự thoát `Settings`/`AudioDevices`/`Notice` về `Compact` khi kéo/thả tệp vào đảo; cô lập `config_file_path()` vào thư mục tạm khi `cfg!(test)` tại [src/config.rs](src/config.rs).
+- **Cách phòng tránh:** Với vùng mục tiêu kéo thả đa phần rời nhau trên một `HWND`, luôn cấp cầu nối region tạm thời + trễ `DragLeave` đủ mượt trong phiên OLE drag, giữ mép vùng mở bao trùm vùng đóng, và luôn cô lập đường dẫn lưu trữ khi `cfg!(test)`.

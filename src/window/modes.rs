@@ -291,13 +291,29 @@ impl WindowController {
         }
     }
 
-    pub(super) fn shelf_allowed_in_current_mode(&self) -> bool {
-        self.config.visible
-            && !self.fullscreen_active
-            && matches!(
-                self.current_effective_mode(),
-                IslandMode::Slim | IslandMode::Compact | IslandMode::Expanded
-            )
+    pub(super) fn is_shelf_drag_active(&self) -> bool {
+        self.shelf.drag_hover || self.shelf_auto_opened_by_drag
+    }
+
+    pub(super) fn active_drag_bridge_rect(&self, pill: PillRectDip) -> Option<PillRectDip> {
+        if !self.is_shelf_drag_active() {
+            return None;
+        }
+        let sr = self.active_shelf_rect(pill)?;
+        let bridge_left = (pill.left + pill.width - 2.0).max(0.0);
+        let bridge_right = (sr.left + 2.0).min(MAX_SURFACE_WIDTH_DIP);
+        if bridge_right <= bridge_left {
+            return None;
+        }
+        let top = pill.top.min(sr.top);
+        let bottom = (pill.top + pill.height).max(sr.top + sr.height);
+        Some(PillRectDip {
+            left: bridge_left,
+            top,
+            width: bridge_right - bridge_left,
+            height: (bottom - top).max(8.0),
+            corner_radius: 1.0,
+        })
     }
 
     pub(super) fn active_shelf_rect(&self, pill: PillRectDip) -> Option<PillRectDip> {
@@ -400,13 +416,17 @@ impl WindowController {
         let shelf_rgn = self
             .active_shelf_rect(pill)
             .map(|sr| compute_pill_region_px(sr, self.dpi_scale));
+        let bridge_rgn = self
+            .active_drag_bridge_rect(pill)
+            .map(|br| compute_pill_region_px(br, self.dpi_scale).0);
 
         if self.animator.is_animating() {
             if self.animator.target_mode == IslandMode::Hidden {
                 return;
             }
             let cur_rgn = compute_pill_region_px(pill, self.dpi_scale);
-            let shelf_unchanged = self.last_shelf_region == shelf_rgn;
+            let shelf_unchanged =
+                self.last_shelf_region == shelf_rgn && self.last_bridge_region == bridge_rgn;
             let already_covers_rect = self.last_region.is_some_and(|(prev, diam)| {
                 diam == 0
                     && prev.left <= cur_rgn.0.left
@@ -433,11 +453,14 @@ impl WindowController {
                 corner_radius: 1.0,
             };
             let (rect, _) = compute_pill_region_px(union_pill, self.dpi_scale);
-            self.apply_combined_regions((rect, 0), shelf_rgn);
+            self.apply_combined_regions((rect, 0), shelf_rgn, bridge_rgn);
         } else {
             let exact = compute_pill_region_px(pill, self.dpi_scale);
-            if self.last_region != Some(exact) || self.last_shelf_region != shelf_rgn {
-                self.apply_combined_regions(exact, shelf_rgn);
+            if self.last_region != Some(exact)
+                || self.last_shelf_region != shelf_rgn
+                || self.last_bridge_region != bridge_rgn
+            {
+                self.apply_combined_regions(exact, shelf_rgn, bridge_rgn);
             }
         }
     }
@@ -446,6 +469,7 @@ impl WindowController {
         &mut self,
         primary: (PixelRect, i32),
         secondary: Option<(PixelRect, i32)>,
+        bridge: Option<PixelRect>,
     ) {
         let make_hrgn = |(rect, diameter): (PixelRect, i32)| -> HRGN {
             if diameter == 0 {
@@ -468,12 +492,12 @@ impl WindowController {
         if rgn_main.is_invalid() {
             return;
         }
-        if let Some(sec) = secondary {
-            let rgn_sec = make_hrgn(sec);
-            if !rgn_sec.is_invalid() {
+        for extra in [secondary, bridge.map(|r| (r, 0))].into_iter().flatten() {
+            let rgn_extra = make_hrgn(extra);
+            if !rgn_extra.is_invalid() {
                 unsafe {
-                    let _ = CombineRgn(Some(rgn_main), Some(rgn_main), Some(rgn_sec), RGN_OR);
-                    let _ = DeleteObject(HGDIOBJ(rgn_sec.0));
+                    let _ = CombineRgn(Some(rgn_main), Some(rgn_main), Some(rgn_extra), RGN_OR);
+                    let _ = DeleteObject(HGDIOBJ(rgn_extra.0));
                 }
             }
         }
@@ -484,12 +508,14 @@ impl WindowController {
         } else {
             self.last_region = Some(primary);
             self.last_shelf_region = secondary;
+            self.last_bridge_region = bridge;
         }
     }
 
     pub(super) fn apply_empty_region(&mut self) {
         self.last_region = None;
         self.last_shelf_region = None;
+        self.last_bridge_region = None;
         let rgn = unsafe { CreateRectRgn(0, 0, 0, 0) };
         if !rgn.is_invalid() && unsafe { SetWindowRgn(self.hwnd, Some(rgn), false) } == 0 {
             unsafe {
@@ -580,6 +606,7 @@ impl WindowController {
         self.cancel_compact_to_notch();
         if !self.mouse_tracked
             && !self.dragging_timeline
+            && !self.is_shelf_drag_active()
             && self.requested_mode == IslandMode::Compact
             && self.should_collapse_to_slim()
         {
@@ -591,7 +618,10 @@ impl WindowController {
 
     pub(super) fn handle_auto_collapse_timer(&mut self) {
         self.cancel_auto_collapse();
-        if !self.mouse_tracked && !self.dragging_timeline && self.requested_mode == IslandMode::Expanded
+        if !self.mouse_tracked
+            && !self.dragging_timeline
+            && !self.is_shelf_drag_active()
+            && self.requested_mode == IslandMode::Expanded
         {
             self.requested_mode = if self.should_collapse_to_slim() {
                 IslandMode::Slim

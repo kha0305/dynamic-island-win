@@ -51,6 +51,7 @@ impl WindowController {
             self.cancel_compact_to_notch();
             if self.requested_mode == IslandMode::Compact
                 && !self.mouse_tracked
+                && !self.is_shelf_drag_active()
                 && self.should_collapse_to_slim()
             {
                 self.requested_mode = IslandMode::Slim;
@@ -611,6 +612,10 @@ impl WindowController {
 
     pub(super) fn handle_anti_expire_timer(&mut self) {
         self.cancel_anti_expire();
+        if self.is_shelf_drag_active() {
+            self.schedule_anti_expire();
+            return;
+        }
         self.anti_banner_active = false;
         self.anti_snapshot = None;
         self.apply_target_and_render();
@@ -690,27 +695,76 @@ impl WindowController {
         }
     }
 
-    pub(super) fn handle_shelf_drag_hover(&mut self, active: bool) {
-        if active && !self.shelf_allowed_in_current_mode() {
-            return;
+    pub(super) fn schedule_shelf_drag_leave(&self) {
+        unsafe {
+            let _ = SetTimer(
+                Some(self.hwnd),
+                TIMER_SHELF_DRAG_LEAVE_ID,
+                SHELF_DRAG_LEAVE_DELAY_MS,
+                None,
+            );
         }
-        let mut changed = self.shelf.drag_hover != active;
-        self.shelf.drag_hover = active;
+    }
+
+    pub(super) fn cancel_shelf_drag_leave(&self) {
+        let _ = unsafe { KillTimer(Some(self.hwnd), TIMER_SHELF_DRAG_LEAVE_ID) };
+    }
+
+    pub(super) fn handle_shelf_drag_hover(&mut self, active: bool) {
         if active {
+            self.cancel_shelf_drag_leave();
+            if !self.config.visible || self.fullscreen_active {
+                return;
+            }
+            let mut mode_changed = false;
+            if matches!(
+                self.current_effective_mode(),
+                IslandMode::Settings | IslandMode::AudioDevices | IslandMode::Notice
+            ) {
+                self.dismiss_notice_state_quiet();
+                self.cancel_auto_collapse();
+                self.cancel_compact_to_notch();
+                self.requested_mode = IslandMode::Compact;
+                mode_changed = true;
+            }
+            let mut changed = mode_changed || !self.shelf.drag_hover;
+            self.shelf.drag_hover = true;
             if !self.shelf.open {
                 self.shelf.open = true;
                 self.shelf_auto_opened_by_drag = true;
                 changed = true;
             }
-        } else if self.shelf_auto_opened_by_drag {
+            if changed {
+                self.apply_target_and_render();
+            }
+        } else if self.shelf.drag_hover || self.shelf_auto_opened_by_drag {
+            self.schedule_shelf_drag_leave();
+        }
+    }
+
+    pub(super) fn handle_shelf_drag_leave_timer(&mut self) {
+        self.cancel_shelf_drag_leave();
+        let mut changed = self.shelf.drag_hover;
+        self.shelf.drag_hover = false;
+        if self.shelf_auto_opened_by_drag {
             self.shelf_auto_opened_by_drag = false;
             if self.shelf.open {
                 self.shelf.open = false;
                 changed = true;
             }
         }
+        if !self.mouse_tracked && !self.dragging_timeline {
+            if self.requested_mode == IslandMode::Expanded {
+                self.schedule_auto_collapse(AUTO_COLLAPSE_DELAY_MS);
+            } else if self.requested_mode == IslandMode::Compact
+                && self.should_collapse_to_slim()
+                && !self.shelf.open
+            {
+                self.schedule_compact_to_notch();
+            }
+        }
         if changed {
-            self.render_current_frame();
+            self.apply_target_and_render();
         }
     }
 
@@ -723,23 +777,32 @@ impl WindowController {
     }
 
     pub(super) fn handle_shelf_drop_paths(&mut self, paths: Vec<PathBuf>) {
-        let was_open = self.shelf.open;
-        let can_show_shelf = self.shelf_allowed_in_current_mode();
+        self.cancel_shelf_drag_leave();
+        if !self.config.visible || self.fullscreen_active {
+            self.shelf.drag_hover = false;
+            self.shelf_auto_opened_by_drag = false;
+            return;
+        }
+        if matches!(
+            self.current_effective_mode(),
+            IslandMode::Settings | IslandMode::AudioDevices | IslandMode::Notice
+        ) {
+            self.dismiss_notice_state_quiet();
+            self.cancel_auto_collapse();
+            self.cancel_compact_to_notch();
+            self.requested_mode = IslandMode::Compact;
+        }
         let added_total = self.shelf.add_paths(&paths);
+        let keep_open_for_drop = added_total > 0 || (!paths.is_empty() && !self.shelf.items.is_empty());
         self.shelf.drag_hover = false;
         self.shelf_auto_opened_by_drag = false;
-        if !can_show_shelf {
-            self.shelf.open = was_open;
-        }
-        if added_total > 0 {
-            save_shelf_state(&self.shelf);
-            if can_show_shelf {
-                self.config.visible = true;
+        if keep_open_for_drop {
+            self.shelf.open = true;
+            if added_total > 0 {
+                save_shelf_state(&self.shelf);
             }
             self.hovered_action = None;
-            self.apply_target_and_render();
-        } else {
-            self.render_current_frame();
         }
+        self.apply_target_and_render();
     }
 }

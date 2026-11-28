@@ -446,8 +446,24 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #032 — Khắc phục triệt để lỗi kéo thả OLE (vùng cầu nối, trễ DragLeave, Slim alignment, timer drag & cô lập test) và phát hành `v0.3.3`
+- **Thời gian thực hiện:** 2026-11-28T14:02:00+07:00
+- **Phạm vi thay đổi:**
+  - [Cargo.toml](Cargo.toml) & [Cargo.lock](Cargo.lock): Nâng phiên bản gói lên **`0.3.3`**.
+  - [src/window/modes.rs](src/window/modes.rs), [src/window/input.rs](src/window/input.rs) & [src/window/mod.rs](src/window/mod.rs): Thêm `active_drag_bridge_rect` nối liền khe `10 DIP` giữa đảo và `Khay tệp` chỉ trong lúc kéo thả (cả `handle_nchittest` lẫn `update_window_region`), đồng thời thêm `TIMER_SHELF_DRAG_LEAVE_ID` (`180 ms`) tránh đứt `DragLeave` giữa đường.
+  - [src/state/hitboxes.rs](src/state/hitboxes.rs): Khớp mép trên `top = pill.top.max(2.0)` khi mở `Khay tệp` từ `Slim` để không hụt vùng dưới con trỏ.
+  - [src/window/workers.rs](src/window/workers.rs) & [src/window/modes.rs](src/window/modes.rs): Chặn `handle_compact_to_notch_timer`, `handle_auto_collapse_timer`, `handle_anti_expire_timer` và `handle_media_update` thu gọn đảo trong khi `is_shelf_drag_active()`; tự thoát `Settings`/`AudioDevices`/`Notice` về `Compact` khi kéo hoặc thả tệp vào đảo (giữ chặn khi đang ẩn hoặc fullscreen).
+  - [src/config.rs](src/config.rs): Cô lập `config_file_path()` sang `temp_dir/wdi_test_profile` khi `cfg!(test)` để chạy test không bao giờ ghi đè `config.ini` và `shelf-items.txt` thật của người dùng.
+  - [src/window/tests.rs](src/window/tests.rs): Mở rộng bước #15 và #17 kiểm chứng khe cầu nối `10 DIP` trả về `HTCLIENT` khi kéo và `HTTRANSPARENT` khi xong, trễ `TIMER_SHELF_DRAG_LEAVE_ID`, `Slim` alignment, chặn co timer khi kéo và kịch bản bật/tắt `Gọn mép` + `Settings`.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **45/45** tests đạt (`0.34s`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`854,016 bytes`**, `SHA256=6fc14d2360b60743415b633d493baf63b36577cca0aa96ab472c3466ea25ad9f`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` và `dist\WinDynamicIsland-win64.zip` (`408,976 bytes`).
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã kiểm tra, vá 3 lỗi biên và phát hành **`v0.3.2`** (`tag v0.3.2`, `849,920 bytes`), đồng bộ gói Portable `dist\` và duy trì tiến trình nền ổn định.
+- **Trạng thái hiện tại:** Đã khắc phục triệt để các nguyên nhân rớt `DragLeave` và lệch trạng thái kéo thả, phát hành **`v0.3.3`** (`tag v0.3.3`, `854,016 bytes`), đồng bộ gói Portable `dist\` và chạy nền sẵn sàng để người dùng kiểm thử thực tế.
 - **Lưu ý cho phiên tiếp theo:**
   - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
   - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).

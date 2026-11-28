@@ -209,6 +209,7 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             tray: None,
             last_region: None,
             last_shelf_region: None,
+            last_bridge_region: None,
             last_window_rect: None,
             hitbox_scratch: Vec::with_capacity(12),
             visualizer_phase: 0.0,
@@ -683,12 +684,19 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
             assert!(f1.exists());
             assert!(f2.exists());
 
-            // 15. Kiểm tra WM_NCHITTEST, tự mở khay khi kéo tới (WM_APP_SHELF_HOVER) và tách kéo ra khỏi &mut borrow.
+            // 15. Kiểm tra WM_NCHITTEST + vùng cầu nối khi kéo (WM_APP_SHELF_HOVER) + trễ DragLeave và tách kéo ra khỏi &mut borrow.
             {
                 let ctrl = get_controller_mut(hwnd).unwrap();
                 ctrl.shelf.open = false;
                 ctrl.shelf_auto_opened_by_drag = false;
+                ctrl.shelf.drag_hover = false;
+                ctrl.requested_mode = IslandMode::Compact;
+                ctrl.animator = IslandAnimator::new(IslandMode::Compact);
             }
+            let compact_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
+            let in_pt = pill_to_screen(compact_pill.left + 40.0, compact_pill.top + 14.0);
+            let gap_pt = pill_to_screen(compact_pill.left + compact_pill.width + 5.0, compact_pill.top + 14.0);
+
             unsafe {
                 window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(1), LPARAM(0));
             }
@@ -697,18 +705,30 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
                 assert!(ctrl.shelf.open, "Keo tep toi phai tu mo Khay tep");
                 assert!(ctrl.shelf_auto_opened_by_drag);
             }
+            let nc_bridge = unsafe {
+                window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(gap_pt.x, gap_pt.y))
+            };
+            assert_eq!(
+                nc_bridge.0, HTCLIENT as isize,
+                "Trong luc keo tep, khe 10 DIP giua dao va khay phai la HTCLIENT de khong dut DragLeave"
+            );
+
             unsafe {
                 window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(0), LPARAM(0));
             }
+            assert!(
+                get_controller_mut(hwnd).unwrap().shelf.open,
+                "Khay phai giu mo trong khoang tre chong rung DragLeave"
+            );
+            unsafe {
+                window_proc(hwnd, WM_TIMER, WPARAM(TIMER_SHELF_DRAG_LEAVE_ID), LPARAM(0));
+            }
             {
                 let ctrl = get_controller_mut(hwnd).unwrap();
-                assert!(!ctrl.shelf.open, "Roi chuot khi chua tha phai tu thu gon lai");
+                assert!(!ctrl.shelf.open, "Het tre DragLeave ma chua tha phai tu thu gon lai");
                 assert!(!ctrl.shelf_auto_opened_by_drag);
             }
 
-            let compact_pill = get_controller_mut(hwnd).unwrap().animator.current_pill();
-            let in_pt = pill_to_screen(compact_pill.left + 40.0, compact_pill.top + 14.0);
-            let gap_pt = pill_to_screen(compact_pill.left + compact_pill.width + 5.0, compact_pill.top + 14.0);
             let nc_in = unsafe {
                 window_proc(hwnd, WM_NCHITTEST, WPARAM(0), make_lparam_xy(in_pt.x, in_pt.y))
             };
@@ -781,34 +801,66 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
                 "Bam thanh tieu de Cai dat phai quay lai nhanh"
             );
 
-            // 17. Chặn mở ngầm Khay tệp khi đang ở Settings/Notice/Hidden và lên lịch thu gọn lại sau khi kéo tệp ra ngoài.
+            // 17. Chặn mở khay khi đang ẩn; tự thoát Settings nhận thả tệp; bật/tắt Gọn mép vẫn kéo thả mượt; và hẹn thu gọn sau drag-out.
             {
                 let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.config.visible = false;
                 ctrl.shelf.open = false;
                 ctrl.shelf_auto_opened_by_drag = false;
                 ctrl.shelf.drag_hover = false;
-                ctrl.execute_ui_action(UiAction::OpenSettings);
-                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
             }
             unsafe {
                 window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(1), LPARAM(0));
             }
             {
                 let ctrl = get_controller_mut(hwnd).unwrap();
-                assert!(!ctrl.shelf.open, "Khong duoc tu mo ngam Khay tep khi dang mo Settings");
-                assert!(!ctrl.shelf_auto_opened_by_drag);
-                assert!(!ctrl.shelf.drag_hover);
+                assert!(!ctrl.shelf.open, "Khong duoc tu mo Khay tep khi dao dang an");
+                ctrl.config.visible = true;
+                ctrl.execute_ui_action(UiAction::OpenSettings);
+                ctrl.animator = IslandAnimator::new(IslandMode::Settings);
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
             }
             let f3 = tmp_dir.join("extra_in_settings.txt");
             let _ = std::fs::write(&f3, b"123");
+            unsafe {
+                window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(1), LPARAM(0));
+            }
             {
                 let ctrl = get_controller_mut(hwnd).unwrap();
+                assert_eq!(
+                    ctrl.current_effective_mode(),
+                    IslandMode::Compact,
+                    "Keo tep qua dao khi dang mo Settings phai tu quay ve Compact de tha ngay"
+                );
+                assert!(ctrl.shelf.open);
                 let before_count = ctrl.shelf.items.len();
                 ctrl.handle_shelf_drop_paths(vec![f3.clone()]);
                 assert_eq!(ctrl.shelf.items.len(), before_count + 1);
-                assert!(!ctrl.shelf.open, "Khong duoc bat ngam shelf.open duoi lop phu Settings");
-                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
-                ctrl.execute_ui_action(UiAction::BackToMedia);
+                assert!(ctrl.shelf.open);
+
+                // Bật Gọn mép -> Slim: mép trên khay mở khớp dock (2.0 DIP), timer không co đảo khi đang kéo, tắt Gọn mép vẫn kéo thả sạch.
+                ctrl.shelf.open = false;
+                ctrl.execute_ui_action(UiAction::ToggleNotchCollapse);
+                let slim_pill = IslandAnimator::new(IslandMode::Slim).current_pill();
+                let slim_dock = shelf_pill_rect(slim_pill, IslandMode::Slim, false, 1).unwrap();
+                let slim_open = shelf_pill_rect(slim_pill, IslandMode::Slim, true, 1).unwrap();
+                assert!((slim_dock.top - slim_open.top).abs() < 0.01);
+
+                ctrl.requested_mode = IslandMode::Compact;
+                ctrl.mouse_tracked = false;
+                ctrl.shelf.drag_hover = true;
+                ctrl.handle_compact_to_notch_timer();
+                assert_eq!(
+                    ctrl.requested_mode,
+                    IslandMode::Compact,
+                    "Khong duoc thu ve Slim trong luc dang keo tep"
+                );
+                ctrl.shelf.drag_hover = false;
+
+                ctrl.execute_ui_action(UiAction::ToggleNotchCollapse);
+                assert!(!ctrl.config.notch_collapse_after_4s);
+                ctrl.requested_mode = IslandMode::Compact;
+                ctrl.animator = IslandAnimator::new(IslandMode::Compact);
 
                 // Kéo ra ngoài khi đang Expanded -> kết thúc bên ngoài phải lên lịch TIMER_AUTO_COLLAPSE_ID.
                 ctrl.config.notch_collapse_after_4s = true;

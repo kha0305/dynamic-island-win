@@ -27,6 +27,13 @@ impl Drop for RegKeyGuard {
 }
 
 pub fn config_file_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return Some(
+            std::env::temp_dir()
+                .join("wdi_test_profile")
+                .join("config.ini"),
+        );
+    }
     let base = std::env::var_os("LOCALAPPDATA")?;
     if base.is_empty() {
         return None;

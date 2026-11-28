@@ -98,10 +98,12 @@ const TIMER_COMPACT_TO_NOTCH_ID: usize = 5;
 const TIMER_HUD_EXPIRE_ID: usize = 6;
 const TIMER_NOTICE_EXPIRE_ID: usize = 7;
 const TIMER_ANTI_EXPIRE_ID: usize = 8;
+const TIMER_SHELF_DRAG_LEAVE_ID: usize = 9;
 const AUTO_COLLAPSE_DELAY_MS: u32 = 5_000;
 const COMPACT_TO_NOTCH_DELAY_MS: u32 = 4_000;
 const NOTICE_AUTO_DISMISS_MS: u32 = 4_000;
 const ANTI_TERMINAL_DISPLAY_MS: u32 = 4_000;
+const SHELF_DRAG_LEAVE_DELAY_MS: u32 = 180;
 const FULLSCREEN_CHECK_INTERVAL_MS: u32 = 800;
 const TIMELINE_TICK_INTERVAL_MS: u32 = 1000;
 const STARTUP_UPDATE_DELAY_MS: u32 = 10_000;
@@ -194,6 +196,7 @@ struct WindowController {
     tray: Option<TrayIcon>,
     last_region: Option<(PixelRect, i32)>,
     last_shelf_region: Option<(PixelRect, i32)>,
+    last_bridge_region: Option<PixelRect>,
     last_window_rect: Option<(i32, i32, i32, i32)>,
     hitbox_scratch: Vec<UiHitbox>,
     visualizer_phase: f32,
@@ -374,6 +377,7 @@ impl IslandWindow {
             tray,
             last_region: None,
             last_shelf_region: None,
+            last_bridge_region: None,
             last_window_rect: None,
             hitbox_scratch: Vec::with_capacity(8),
             visualizer_phase: 0.0,
@@ -579,6 +583,7 @@ unsafe extern "system" fn window_proc(
                     TIMER_COMPACT_TO_NOTCH_ID => ctrl.handle_compact_to_notch_timer(),
                     TIMER_HUD_EXPIRE_ID => ctrl.handle_hud_expire_timer(),
                     TIMER_ANTI_EXPIRE_ID => ctrl.handle_anti_expire_timer(),
+                    TIMER_SHELF_DRAG_LEAVE_ID => ctrl.handle_shelf_drag_leave_timer(),
                     TIMER_NOTICE_EXPIRE_ID => ctrl.dismiss_notice(),
                     TIMER_FULLSCREEN_CHECK_ID => {
                         release_capture = ctrl.refresh_fullscreen_state();

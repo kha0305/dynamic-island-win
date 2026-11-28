@@ -5,6 +5,9 @@ impl WindowController {
         let was_capturing = self.dragging_timeline
             || self.dragging_volume
             || self.shelf_drag_candidate.is_some();
+        self.cancel_shelf_drag_leave();
+        self.shelf.drag_hover = false;
+        self.shelf_auto_opened_by_drag = false;
         self.mouse_tracked = false;
         self.hovered_action = None;
         self.hovered_header = false;
@@ -43,6 +46,9 @@ impl WindowController {
             || self
                 .active_shelf_rect(pill)
                 .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0))
+            || self
+                .active_drag_bridge_rect(pill)
+                .is_some_and(|br| shelf_contains_dip(br, x_dip, y_dip, 1.0))
     }
 
     pub(super) fn sync_pointer_presence(&mut self) {
@@ -82,7 +88,10 @@ impl WindowController {
         let over_shelf = self
             .active_shelf_rect(pill)
             .is_some_and(|sr| shelf_contains_dip(sr, x_dip, y_dip, 2.0));
-        if over_pill || over_shelf {
+        let over_bridge = self
+            .active_drag_bridge_rect(pill)
+            .is_some_and(|br| shelf_contains_dip(br, x_dip, y_dip, 1.0));
+        if over_pill || over_shelf || over_bridge {
             HTCLIENT as isize
         } else {
             HTTRANSPARENT as isize

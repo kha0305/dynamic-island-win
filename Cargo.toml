@@ -1,6 +1,6 @@
 [package]
 name = "win-dynamic-island"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "Thanh viên thuốc thông minh (Dynamic Island) gọn nhẹ cho Windows 11"
 
