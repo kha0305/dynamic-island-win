@@ -23,7 +23,7 @@
 ### C. Đối Chiếu Chuẩn Dự Án & Giao Diện
 - [x] **Không Emoji:** Đã kiểm tra toàn bộ mã nguồn Rust, giao diện, menu Tray, tài liệu không chứa ký tự emoji.
 - [x] **Tiếng Việt chuẩn xác & UTF-8:** Mọi chuỗi hiển thị trên Island và menu System Tray dùng tiếng Việt có dấu chuẩn xác, hiển thị qua DirectWrite với cắt ellipsis tự động.
-- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --all-targets -- -D warnings`, 37/37 `cargo test`, `cargo build --release` (`v0.2.1`, `916,992 bytes`) và chụp ảnh kiểm chứng trực tiếp các trạng thái giao diện trên Desktop.
+- [x] **Kiểm chứng thực tế:** Đã vượt qua `cargo clippy --all-targets -- -D warnings`, 37/37 `cargo test`, `cargo build --release` (`v0.2.2`, `917,504 bytes`) và chụp ảnh kiểm chứng trực tiếp các trạng thái giao diện trên Desktop.
 
 ---
 
@@ -114,3 +114,9 @@
 - **Nguyên nhân gốc rễ:** `BrushPalette` (`src/renderer.rs`) dùng chung `brushes.accent` / `brushes.accent_soft` (vốn bị `apply_media_theme_colors` ghi đè khi đổi ảnh bìa) cho cả bảng cấu hình hệ thống; `target_dimensions_for_mode(IslandMode::AudioDevices)` cố định `284.0 DIP`; `mode_content_reveal_alpha` giả định cứng `AudioDevices` luôn cao như `Settings`.
 - **Cách sửa:** Tách `sys_accent` / `sys_accent_soft` cố định trong `BrushPalette`, chuyển nút `"Quay lại"` sang `text_primary`; đưa `OpenSettings` xuống góc dưới phải `Expanded` (`424 x 160 DIP`); tính chiều cao `AudioDevices` linh hoạt theo `audio_devices_height_for_count` và chuẩn hóa `mode_content_reveal_alpha` theo `target_h` thực tế; đồng thời tách `settings_return_mode` / `audio_devices_return_mode` trong `src/window.rs`.
 - **Cách phòng tránh:** Luôn tách riêng bảng màu thích ứng media với màu điều khiển hệ thống, luôn chụp ảnh thực tế tất cả các màn hình sau khi thay đổi giao diện, và trong unit test `IslandAnimator::step` phải tăng thời gian mô phỏng cố định (như `+8 ms/step`) thay vì gọi `Instant::now()` liên tục gây kéo dài thời gian test.
+
+### Lỗi #014: Tắt `Gọn mép 4s` vẫn bị thu gọn về `Slim` khi khởi động, rời chuột lúc không nhạc hoặc quay lại từ `Settings`
+- **Hiện tượng lỗi:** Dù người dùng đã tắt `Gọn mép 4s` (`notch_collapse_after_4s = false`) và tắt `Tự ẩn khi rảnh` (`auto_hide_when_idle = false`), viên thuốc vẫn khởi động ở dạng `Slim` (`152 x 16`) hoặc tự co về `Slim` khi không có nhạc/rời chuột/tắt timer 4s/bấm `"Quay lại"` từ `Settings`.
+- **Nguyên nhân gốc rễ:** Trong `src/window.rs`, `IslandWindow::create` luôn gán `requested_mode = IslandMode::Slim`; hàm `collapsed_rest_mode()` và các điểm chuyển cảnh (`handle_media_update`, `clear_hud`, `handle_mouse_leave`, `handle_compact_to_notch_timer`, `handle_auto_collapse_timer`, `ToggleNotchCollapse`, `IDM_TOGGLE_EXPANDED`) ép về `Slim` mỗi khi `!self.media_state.has_session` mà không kiểm tra `!self.config.notch_collapse_after_4s`; riêng `ToggleNotchCollapse` khi tắt từ `Slim` không cập nhật `settings_return_mode`.
+- **Cách sửa:** Hợp nhất chính sách vào `WindowController::should_collapse_to_slim()` (`notch_collapse_after_4s || (auto_hide_when_idle && !media_state.has_session)`), cập nhật `collapsed_rest_mode()`, `IslandWindow::create`, toàn bộ nhánh chuyển đổi trong `src/window.rs`, thêm `sync_mode_after_collapse_policy_change()` cho `ToggleNotchCollapse` và `ToggleAutoHideIdle`, đồng thời bổ sung kịch bản kiểm thử bước #13.
+- **Cách phòng tránh:** Gom mọi điều kiện chuyển về chế độ thu gọn (`Slim`) vào một hàm chính sách duy nhất (`should_collapse_to_slim`) và viết test tích hợp cho cả hai cực cấu hình (`notch_collapse_after_4s = true` và `false`) khi không có session media.

@@ -2452,7 +2452,7 @@ impl IslandRenderer {
             }
             if hb.action == UiAction::OpenSettings {
                 let icon_brush = text_secondary.clone();
-                let icon_cx = hb.rect.left + 32.0;
+                let icon_cx = hb.rect.left + 21.0;
                 let icon_cy = hb.rect.top + hb.rect.height() * 0.5;
                 unsafe {
                     self.draw_gear_icon(canvas, icon_cx, icon_cy, &icon_brush);
@@ -2462,9 +2462,9 @@ impl IslandRenderer {
                         TextFormatSlot::Button,
                         &text_primary,
                         UiRectDip {
-                            left: hb.rect.left + 44.0,
+                            left: hb.rect.left + 32.0,
                             top: hb.rect.top,
-                            right: hb.rect.right - 12.0,
+                            right: hb.rect.right - 10.0,
                             bottom: hb.rect.bottom,
                         },
                     );

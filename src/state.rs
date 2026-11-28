@@ -703,7 +703,7 @@ fn fill_expanded_hitboxes(pill: PillRectDip, out: &mut Vec<UiHitbox>) {
         bottom: controls_bottom - 2.0,
     };
     let settings_btn = UiRectDip {
-        left: center_x + 68.0,
+        left: pill.left + pill.width - 110.0,
         top: controls_bottom - 34.0,
         right: pill.left + pill.width - 16.0,
         bottom: controls_bottom - 2.0,
@@ -1047,7 +1047,8 @@ mod tests {
             .rect;
         assert!(audio_rect.right <= prev_rect.left);
         assert!(next_rect.right <= settings_rect.left);
-        assert!((audio_rect.width() - settings_rect.width()).abs() < 0.1);
+        assert!((settings_rect.width() - 94.0).abs() < 0.1);
+        assert!(audio_rect.width() >= 120.0);
         assert!(settings_rect.top >= pill.top + 110.0);
 
         for hb in &hitboxes {

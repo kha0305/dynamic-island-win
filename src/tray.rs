@@ -112,7 +112,12 @@ impl TrayIcon {
         append_menu_item(menu, IDM_TOGGLE_VISIBLE, toggle_label, false);
         append_menu_item(menu, IDM_OPEN_SETTINGS, "Mở bảng điều khiển nhanh", false);
         let expand_label = if is_expanded {
-            "Thu gọn thành thanh mảnh"
+            if config.notch_collapse_after_4s || (config.auto_hide_when_idle && !media.has_session)
+            {
+                "Thu gọn thành thanh mảnh"
+            } else {
+                "Thu gọn viên thuốc"
+            }
         } else {
             "Mở rộng thẻ phát nhạc"
         };

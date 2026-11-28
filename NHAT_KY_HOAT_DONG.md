@@ -356,10 +356,24 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
   - Đo kiểm runtime thực tế bản `dist\win-dynamic-island.exe` (`PID 18972`): `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `IDLE_CPU_2S_MS=0`, `WS_MB=49.34`, `PRIV_MB=26.31`, `HANDLES=527`, `NV_MODULES=0`.
   - Đã chụp ảnh kiểm chứng trực tiếp trên màn hình `1920x1080` các chế độ `Compact`, `Expanded`, `Settings` và `AudioDevices` của bản `v0.2.1`: đáy `Expanded` đối xứng, `Settings` phân 3 nhóm sắc nét không bị nhuốm đỏ theo bài hát, `AudioDevices` ôm gọn 3 thiết bị không dư khoảng trống đáy.
 
+### Mục #026 — Sửa lỗi nút `Cài đặt` rộng và sửa lỗi `Gọn mép 4s` tắt vẫn thu về `Slim` (`v0.2.2`)
+- **Thời gian thực hiện:** 2026-11-28T09:56:16+07:00
+- **Phạm vi thay đổi:**
+  - `Cargo.toml` & `Cargo.lock`: Nâng phiên bản lên `0.2.2`.
+  - [src/state.rs](src/state.rs) & [src/renderer.rs](src/renderer.rs): Thu gọn nút `OpenSettings` ở góc dưới phải `Expanded` từ `128 DIP` xuống `94.0 DIP` (`pill.left + pill.width - 110.0 .. pill.left + pill.width - 16.0`) với lề icon/chữ cân xứng (`21.0 DIP` / `32.0..right-10.0`); cập nhật test hitbox `Expanded`.
+  - [src/window.rs](src/window.rs): Thêm `should_collapse_to_slim()` và `sync_mode_after_collapse_policy_change()`, chuẩn hóa `IslandWindow::create`, `collapsed_rest_mode()`, `handle_media_update`, `clear_hud`, `handle_mouse_leave`, `handle_compact_to_notch_timer`, `handle_auto_collapse_timer`, `ToggleNotchCollapse`, `ToggleAutoHideIdle` và `IDM_TOGGLE_EXPANDED` để khi tắt `Gọn mép 4s` (và tắt `Tự ẩn khi rảnh`), viên thuốc giữ ổn định dáng `Compact` không bao giờ tự co về `Slim` kể cả khi không có nhạc; bổ sung kiểm thử bước #13.
+  - [src/tray.rs](src/tray.rs): Điều chỉnh nhãn thu gọn trong menu ngữ cảnh phù hợp theo trạng thái `notch_collapse_after_4s`.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked -- --nocapture`: **37/37** tests đạt trong `0.26s`.
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (`917,504 bytes`), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` (`abd34e81355d0aab0115206cd019b5e8d9ba4a08bf0ccd8a4854dd264d9460ed`) và `dist\WinDynamicIsland-win64.zip` (`396,828 bytes`).
+  - Đo kiểm runtime bản `dist\win-dynamic-island.exe` (`PID 7372`): `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`, `IDLE_CPU_2S_MS=0`, `WS_MB=48.48`, `PRIV_MB=19.34`, `HANDLES=548`, `NV_MODULES=0`.
+  - Đã chụp ảnh trực tiếp kiểm chứng nút `Cài đặt` thu gọn cân đối trên `Expanded` và kiểm tra giữ nguyên `Compact` sau 6 giây rời chuột khi tắt `Gọn mép 4s`.
+
 ---
 
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn tất và phát hành **v0.2.1** lên GitHub (`tag v0.2.1`), đồng bộ gói Portable `dist/` (`916,992 bytes`), dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 18972`).
+- **Trạng thái hiện tại:** Đã hoàn tất và phát hành **v0.2.2** lên GitHub (`tag v0.2.2`), đồng bộ gói Portable `dist/` (`917,504 bytes`), dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định (`PID 7372`).
 - **Lưu ý cho phiên tiếp theo:**
   - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
   - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).

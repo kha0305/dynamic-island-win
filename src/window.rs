@@ -272,12 +272,17 @@ impl IslandWindow {
         let tooltip = format!("Win Dynamic Island (GPU: {})", renderer.adapter_name());
         let tray = TrayIcon::new(hwnd, &tooltip).ok();
 
-        let initial_mode = effective_mode(IslandMode::Slim, config, false, false, false);
+        let rest_mode = if config.notch_collapse_after_4s || config.auto_hide_when_idle {
+            IslandMode::Slim
+        } else {
+            IslandMode::Compact
+        };
+        let initial_mode = effective_mode(rest_mode, config, false, false, false);
         let controller = Box::new(WindowController {
             hwnd,
             config,
             monitors,
-            requested_mode: IslandMode::Slim,
+            requested_mode: rest_mode,
             settings_return_mode: IslandMode::Expanded,
             audio_devices_return_mode: IslandMode::Expanded,
             media_state: MediaDisplayState::default(),
@@ -503,9 +508,7 @@ impl WindowController {
         if self.current_effective_mode() == IslandMode::Hidden {
             self.config.visible = true;
             self.requested_mode = IslandMode::Compact;
-            if !self.mouse_tracked
-                && (self.config.notch_collapse_after_4s || !self.media_state.has_session)
-            {
+            if !self.mouse_tracked && self.should_collapse_to_slim() {
                 self.schedule_compact_to_notch();
             }
         } else {
@@ -525,7 +528,7 @@ impl WindowController {
             self.cancel_compact_to_notch();
             IslandMode::Expanded
         } else {
-            if !self.mouse_tracked {
+            if !self.mouse_tracked && self.should_collapse_to_slim() {
                 self.schedule_compact_to_notch();
             }
             IslandMode::Compact
@@ -700,16 +703,19 @@ impl WindowController {
                 } else {
                     self.cancel_compact_to_notch();
                 }
-            } else if self.requested_mode == IslandMode::Slim
-                && !self.config.notch_collapse_after_4s
-            {
+            } else if self.requested_mode == IslandMode::Slim && !self.should_collapse_to_slim() {
                 self.requested_mode = IslandMode::Compact;
                 self.cancel_compact_to_notch();
             }
         } else {
             self.cancel_compact_to_notch();
-            if self.requested_mode == IslandMode::Compact && !self.mouse_tracked {
+            if self.requested_mode == IslandMode::Compact
+                && !self.mouse_tracked
+                && self.should_collapse_to_slim()
+            {
                 self.requested_mode = IslandMode::Slim;
+            } else if self.requested_mode == IslandMode::Slim && !self.should_collapse_to_slim() {
+                self.requested_mode = IslandMode::Compact;
             }
         }
 
@@ -1261,10 +1267,10 @@ impl WindowController {
                 if self.requested_mode == IslandMode::Slim {
                     self.requested_mode = IslandMode::Compact;
                 }
-            } else if self.requested_mode == IslandMode::Compact
-                && (self.config.notch_collapse_after_4s || !self.media_state.has_session)
-            {
+            } else if self.requested_mode == IslandMode::Compact && self.should_collapse_to_slim() {
                 self.requested_mode = IslandMode::Slim;
+            } else if self.requested_mode == IslandMode::Slim && !self.should_collapse_to_slim() {
+                self.requested_mode = IslandMode::Compact;
             }
             self.apply_target_and_render();
         }
@@ -1569,8 +1575,13 @@ impl WindowController {
         true
     }
 
+    fn should_collapse_to_slim(&self) -> bool {
+        self.config.notch_collapse_after_4s
+            || (self.config.auto_hide_when_idle && !self.media_state.has_session)
+    }
+
     fn collapsed_rest_mode(&self) -> IslandMode {
-        if self.media_state.has_session {
+        if self.media_state.has_session || !self.should_collapse_to_slim() {
             IslandMode::Compact
         } else {
             IslandMode::Slim
@@ -1607,7 +1618,7 @@ impl WindowController {
         if !self.mouse_tracked
             && !self.dragging_timeline
             && self.requested_mode == IslandMode::Compact
-            && (self.config.notch_collapse_after_4s || !self.media_state.has_session)
+            && self.should_collapse_to_slim()
         {
             self.requested_mode = IslandMode::Slim;
             self.hovered_action = None;
@@ -1646,12 +1657,11 @@ impl WindowController {
         self.cancel_auto_collapse();
         if !self.mouse_tracked && !self.dragging_timeline && self.requested_mode == IslandMode::Expanded
         {
-            self.requested_mode =
-                if self.config.notch_collapse_after_4s || !self.media_state.has_session {
-                    IslandMode::Slim
-                } else {
-                    self.collapsed_rest_mode()
-                };
+            self.requested_mode = if self.should_collapse_to_slim() {
+                IslandMode::Slim
+            } else {
+                self.collapsed_rest_mode()
+            };
             self.hovered_action = None;
             self.apply_target_and_render();
         }
@@ -1800,9 +1810,13 @@ impl WindowController {
         }
         if self.requested_mode == IslandMode::Compact {
             if !self.media_state.has_session {
-                self.cancel_compact_to_notch();
-                self.requested_mode = IslandMode::Slim;
-                self.apply_target_and_render();
+                if self.should_collapse_to_slim() {
+                    self.cancel_compact_to_notch();
+                    self.requested_mode = IslandMode::Slim;
+                    self.apply_target_and_render();
+                } else if hover_changed && !self.animator.is_animating() {
+                    self.render_current_frame();
+                }
             } else {
                 if self.config.notch_collapse_after_4s {
                     self.schedule_compact_to_notch();
@@ -2023,6 +2037,25 @@ impl WindowController {
         self.render_current_frame();
     }
 
+    fn sync_mode_after_collapse_policy_change(&mut self) {
+        if self.should_collapse_to_slim() {
+            if self.requested_mode == IslandMode::Compact && !self.mouse_tracked {
+                self.schedule_compact_to_notch();
+            }
+        } else {
+            self.cancel_compact_to_notch();
+            if self.requested_mode == IslandMode::Slim {
+                self.requested_mode = IslandMode::Compact;
+            }
+            if self.settings_return_mode == IslandMode::Slim {
+                self.settings_return_mode = IslandMode::Compact;
+            }
+            if self.audio_devices_return_mode == IslandMode::Slim {
+                self.audio_devices_return_mode = IslandMode::Compact;
+            }
+        }
+    }
+
     fn normalized_subview_return_mode(&self, saved: IslandMode) -> IslandMode {
         match saved {
             IslandMode::Expanded => IslandMode::Expanded,
@@ -2172,20 +2205,12 @@ impl WindowController {
             }
             UiAction::ToggleNotchCollapse => {
                 self.config.notch_collapse_after_4s = !self.config.notch_collapse_after_4s;
-                if self.config.notch_collapse_after_4s {
-                    if self.requested_mode == IslandMode::Compact && !self.mouse_tracked {
-                        self.schedule_compact_to_notch();
-                    }
-                } else {
-                    self.cancel_compact_to_notch();
-                    if self.requested_mode == IslandMode::Slim && self.media_state.has_session {
-                        self.requested_mode = IslandMode::Compact;
-                    }
-                }
+                self.sync_mode_after_collapse_policy_change();
                 save_config(&self.config);
             }
             UiAction::ToggleAutoHideIdle => {
                 self.config.auto_hide_when_idle = !self.config.auto_hide_when_idle;
+                self.sync_mode_after_collapse_policy_change();
                 save_config(&self.config);
             }
             UiAction::ToggleAutoHideFullscreen => {
@@ -2553,9 +2578,7 @@ unsafe extern "system" fn window_proc(
                             | IslandMode::AudioDevices
                             | IslandMode::Notice => {
                                 ctrl.cancel_auto_collapse();
-                                if ctrl.config.notch_collapse_after_4s
-                                    || !ctrl.media_state.has_session
-                                {
+                                if ctrl.should_collapse_to_slim() {
                                     IslandMode::Slim
                                 } else {
                                     ctrl.collapsed_rest_mode()
@@ -3197,6 +3220,30 @@ mod tests {
                 );
                 ctrl.execute_ui_action(UiAction::NoticeSecondary);
                 assert!(ctrl.active_notice.is_none());
+            }
+
+            // 13. Khi đã tắt Gọn mép 4s (và tắt Tự ẩn khi rảnh), tuyệt đối không tự co về Slim dù không có nhạc.
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.config.notch_collapse_after_4s = false;
+                ctrl.config.auto_hide_when_idle = false;
+                ctrl.media_state = MediaDisplayState::default();
+                ctrl.requested_mode = IslandMode::Slim;
+                ctrl.execute_ui_action(UiAction::OpenSettings);
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
+                ctrl.sync_mode_after_collapse_policy_change();
+                ctrl.execute_ui_action(UiAction::BackToMedia);
+                assert_eq!(ctrl.requested_mode, IslandMode::Compact);
+
+                ctrl.mouse_tracked = true;
+                ctrl.handle_mouse_leave();
+                assert_eq!(ctrl.requested_mode, IslandMode::Compact);
+                ctrl.handle_compact_to_notch_timer();
+                assert_eq!(ctrl.requested_mode, IslandMode::Compact);
+
+                ctrl.requested_mode = IslandMode::Expanded;
+                ctrl.handle_auto_collapse_timer();
+                assert_eq!(ctrl.requested_mode, IslandMode::Compact);
             }
 
             unsafe {
