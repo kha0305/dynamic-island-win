@@ -691,6 +691,9 @@ impl WindowController {
     }
 
     pub(super) fn handle_shelf_drag_hover(&mut self, active: bool) {
+        if active && !self.shelf_allowed_in_current_mode() {
+            return;
+        }
         let mut changed = self.shelf.drag_hover != active;
         self.shelf.drag_hover = active;
         if active {
@@ -720,12 +723,19 @@ impl WindowController {
     }
 
     pub(super) fn handle_shelf_drop_paths(&mut self, paths: Vec<PathBuf>) {
+        let was_open = self.shelf.open;
+        let can_show_shelf = self.shelf_allowed_in_current_mode();
         let added_total = self.shelf.add_paths(&paths);
         self.shelf.drag_hover = false;
         self.shelf_auto_opened_by_drag = false;
+        if !can_show_shelf {
+            self.shelf.open = was_open;
+        }
         if added_total > 0 {
             save_shelf_state(&self.shelf);
-            self.config.visible = true;
+            if can_show_shelf {
+                self.config.visible = true;
+            }
             self.hovered_action = None;
             self.apply_target_and_render();
         } else {

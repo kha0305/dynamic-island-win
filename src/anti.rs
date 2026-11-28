@@ -1,6 +1,6 @@
 use std::ffi::c_void;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -336,12 +336,37 @@ fn classify_tool_call(
     (AntiAgentState::Analyzing, sanitize_detail(tool_name))
 }
 
-/// Đọc dòng cuối của `transcript.jsonl` (nếu có) để nắm ngay tool đang chuẩn bị chạy mà không cần PreToolUse hook.
+const TRANSCRIPT_TAIL_MAX_BYTES: u64 = 128 * 1024;
+
+/// Đọc tối đa phần đuôi `transcript.jsonl` để nắm ngay tool đang chuẩn bị chạy mà không nạp cả tệp lớn.
 fn infer_state_from_transcript_tail(
     transcript_path: &Path,
     had_prev_error: bool,
 ) -> Option<(AntiAgentState, String)> {
-    let text = fs::read_to_string(transcript_path).ok()?;
+    let mut file = fs::File::open(transcript_path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    if file_len == 0 {
+        return None;
+    }
+    let start_offset = file_len.saturating_sub(TRANSCRIPT_TAIL_MAX_BYTES);
+    if start_offset > 0 {
+        file.seek(SeekFrom::Start(start_offset)).ok()?;
+    }
+
+    let mut buf = Vec::with_capacity(
+        (file_len - start_offset).min(TRANSCRIPT_TAIL_MAX_BYTES) as usize,
+    );
+    file.take(TRANSCRIPT_TAIL_MAX_BYTES)
+        .read_to_end(&mut buf)
+        .ok()?;
+    let tail_bytes = if start_offset > 0 {
+        let first_nl = buf.iter().position(|&b| b == b'\n')?;
+        &buf[first_nl + 1..]
+    } else {
+        &buf[..]
+    };
+    let text = String::from_utf8_lossy(tail_bytes);
+
     for line in text.lines().rev().take(8) {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -916,5 +941,33 @@ mod tests {
         let removed = remove_anti_hook_from_json(&merged).expect("remove hooks");
         assert!(removed.contains("\"my-custom-lint\""));
         assert!(!removed.contains("\"win-dynamic-island-status\""));
+    }
+
+    #[test]
+    fn infer_state_from_transcript_tail_reads_only_tail_on_large_files() {
+        let dir = std::env::temp_dir().join(format!("wdi_anti_tail_{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("transcript.jsonl");
+
+        let filler = r#"{"type":"USER_INPUT","text":"hello filler line padding bytes 0123456789abcdef"}"#;
+        let mut content = String::with_capacity(200 * 1024);
+        while content.len() < 180 * 1024 {
+            content.push_str(filler);
+            content.push('\n');
+        }
+        content.push_str(
+            r#"{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"run_command","args":{"CommandLine":"cargo test --locked"}}]}"#,
+        );
+        content.push('\n');
+        fs::write(&path, content.as_bytes()).expect("write large transcript");
+
+        let inferred = infer_state_from_transcript_tail(&path, false);
+        assert_eq!(
+            inferred.as_ref().map(|(s, _)| *s),
+            Some(AntiAgentState::Testing)
+        );
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 }

@@ -475,14 +475,26 @@ impl WindowController {
     }
 
     pub(super) fn finish_shelf_drag_out(&mut self) {
+        let pointer_inside = self.is_cursor_actually_over_pill();
+        self.finish_shelf_drag_out_with_presence(pointer_inside);
+    }
+
+    pub(super) fn finish_shelf_drag_out_with_presence(&mut self, pointer_inside: bool) {
         self.shelf_drag_candidate = None;
         self.pressed_action = None;
         self.pointer_down_pos = None;
-        self.mouse_tracked = false;
-        self.hovered_action = None;
         self.hovered_header = false;
-        self.sync_pointer_presence();
-        self.render_current_frame();
+        if pointer_inside {
+            self.mouse_tracked = false;
+            self.hovered_action = None;
+            self.render_current_frame();
+        } else {
+            let had_hover = self.hovered_action.is_some();
+            self.handle_mouse_leave();
+            if !had_hover {
+                self.render_current_frame();
+            }
+        }
     }
 
     pub(super) fn handle_mouse_leave(&mut self) {

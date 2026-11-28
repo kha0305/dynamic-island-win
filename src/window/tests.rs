@@ -781,6 +781,57 @@ fn mouse_wheel_screen_coords_delta_settings_and_drag_integration() {
                 "Bam thanh tieu de Cai dat phai quay lai nhanh"
             );
 
+            // 17. Chặn mở ngầm Khay tệp khi đang ở Settings/Notice/Hidden và lên lịch thu gọn lại sau khi kéo tệp ra ngoài.
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                ctrl.shelf.open = false;
+                ctrl.shelf_auto_opened_by_drag = false;
+                ctrl.shelf.drag_hover = false;
+                ctrl.execute_ui_action(UiAction::OpenSettings);
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
+            }
+            unsafe {
+                window_proc(hwnd, WM_APP_SHELF_HOVER, WPARAM(1), LPARAM(0));
+            }
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                assert!(!ctrl.shelf.open, "Khong duoc tu mo ngam Khay tep khi dang mo Settings");
+                assert!(!ctrl.shelf_auto_opened_by_drag);
+                assert!(!ctrl.shelf.drag_hover);
+            }
+            let f3 = tmp_dir.join("extra_in_settings.txt");
+            let _ = std::fs::write(&f3, b"123");
+            {
+                let ctrl = get_controller_mut(hwnd).unwrap();
+                let before_count = ctrl.shelf.items.len();
+                ctrl.handle_shelf_drop_paths(vec![f3.clone()]);
+                assert_eq!(ctrl.shelf.items.len(), before_count + 1);
+                assert!(!ctrl.shelf.open, "Khong duoc bat ngam shelf.open duoi lop phu Settings");
+                assert_eq!(ctrl.current_effective_mode(), IslandMode::Settings);
+                ctrl.execute_ui_action(UiAction::BackToMedia);
+
+                // Kéo ra ngoài khi đang Expanded -> kết thúc bên ngoài phải lên lịch TIMER_AUTO_COLLAPSE_ID.
+                ctrl.config.notch_collapse_after_4s = true;
+                ctrl.config.auto_hide_when_idle = false;
+                ctrl.media_state = MediaDisplayState {
+                    has_session: true,
+                    ..MediaDisplayState::default()
+                };
+                ctrl.requested_mode = IslandMode::Expanded;
+                ctrl.animator = IslandAnimator::new(IslandMode::Expanded);
+                ctrl.mouse_tracked = true;
+                ctrl.hovered_action = Some(UiAction::MediaPlayPause);
+                let _ = unsafe { KillTimer(Some(hwnd), TIMER_AUTO_COLLAPSE_ID) };
+                ctrl.finish_shelf_drag_out_with_presence(false);
+                assert!(!ctrl.mouse_tracked);
+                assert!(ctrl.hovered_action.is_none());
+                assert!(
+                    unsafe { KillTimer(Some(hwnd), TIMER_AUTO_COLLAPSE_ID) }.is_ok(),
+                    "Ket thuc keo ra ngoai tu Expanded phai hen gio thu gon"
+                );
+            }
+            let _ = std::fs::remove_file(&f3);
+
             let _ = std::fs::remove_file(&f1);
             let _ = std::fs::remove_file(&f2);
             let _ = std::fs::remove_dir(&tmp_dir);

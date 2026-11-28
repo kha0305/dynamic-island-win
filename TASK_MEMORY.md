@@ -27,11 +27,11 @@
 | Thành phần | Đường dẫn | Trạng thái | Ghi chú |
 | :--- | :--- | :--- | :--- |
 | Luật riêng dự án | `GEMINI.md` | HOÀN TẤT | Kế thừa `global_rules.md` + ràng buộc Win32/Rust |
-| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#030 gồm `v0.3.0` và bản phát hành vá lỗi **`v0.3.1`** (`#029–#030`) |
-| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.1` và ghi nhận Lỗi #001–#015 |
-| Đặc tả tính năng | `specs/v03-shelf-anti-refactor/spec.md` (kế thừa `specs/dynamic-island/`..`ui-polish-v021/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ `v0.3.0` / `v0.3.1` |
-| Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT v0.3.1 | Đã hoàn thành toàn bộ `T1.1–T1.6`, `T2.1–T2.5`, `T3.1–T3.4` và bản vá `v0.3.1` |
-| Mã nguồn & CI/CD | `Cargo.toml`, `.cargo/config.toml`, `src/**/*.rs`, `.github/workflows/release.yml` | ĐÃ PHÁT HÀNH v0.3.1 | `clippy --locked` sạch, `44/44` tests đạt (`0.34s`), `.exe` dung lượng `845,312 bytes`; đã đẩy nhánh `main` và tag `v0.3.1` lên `origin` |
+| Nhật ký hoạt động | `NHAT_KY_HOAT_DONG.md` | HOÀN TẤT | Đã ghi Mục #001–#031 gồm `v0.3.0`, `v0.3.1` (`#029–#030`) và **`v0.3.2`** (`#031`) |
+| Sổ tay kiểm tra bug | `SO_TAY_KIEM_TRA_BUG.md` | HOÀN TẤT | Đã đối chiếu toàn bộ checklist `v0.3.2` và ghi nhận Lỗi #001–#016 |
+| Đặc tả tính năng | `specs/v03-shelf-anti-refactor/spec.md` (kế thừa `specs/dynamic-island/`..`ui-polish-v021/`) | ĐÃ CHỐT | Đã hoàn tất đặc tả và nghiệm thu toàn bộ `v0.3.0` / `v0.3.1` / `v0.3.2` |
+| Kế hoạch & Công việc | `specs/*/plan.md` (+ `tasks.md`) | HOÀN TẤT v0.3.2 | Đã hoàn thành toàn bộ `T1.1–T1.6`, `T2.1–T2.5`, `T3.1–T3.4`, `v0.3.1` và bản vá `v0.3.2` |
+| Mã nguồn & CI/CD | `Cargo.toml`, `.cargo/config.toml`, `src/**/*.rs`, `.github/workflows/release.yml` | ĐÃ PHÁT HÀNH v0.3.2 | `clippy --locked` sạch, `45/45` tests đạt (`0.37s`), `.exe` dung lượng `849,920 bytes`; đã đẩy nhánh `main` và tag `v0.3.2` lên `origin` |
 
 ---
 

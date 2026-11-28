@@ -431,8 +431,23 @@ Tài liệu theo dõi tiến độ kỹ thuật, các quyết định thiết k�
 
 ---
 
+### Mục #031 — Tự kiểm tra bug hậu phát hành, vá 3 lỗi biên và phát hành `v0.3.2`
+- **Thời gian thực hiện:** 2026-11-28T13:44:00+07:00
+- **Phạm vi thay đổi:**
+  - [Cargo.toml](Cargo.toml) & [Cargo.lock](Cargo.lock): Nâng phiên bản gói lên **`0.3.2`**.
+  - [src/anti.rs](src/anti.rs): Sửa `infer_state_from_transcript_tail` dùng `SeekFrom::Start` đọc tối đa `128 KiB` cuối `transcript.jsonl` thay vì `fs::read_to_string` toàn tệp, đồng thời bổ sung unit test cho tệp vượt ngưỡng `128 KiB`.
+  - [src/window/modes.rs](src/window/modes.rs) & [src/window/workers.rs](src/window/workers.rs): Thêm `shelf_allowed_in_current_mode()`, chặn `handle_shelf_drag_hover(true)` và tránh bật ngầm `shelf.open` dưới các lớp phủ `Settings`, `AudioDevices`, `Notice` hoặc `Hidden` trong `handle_shelf_drop_paths`.
+  - [src/window/input.rs](src/window/input.rs): Sửa `finish_shelf_drag_out` (qua `finish_shelf_drag_out_with_presence`) để gọi `handle_mouse_leave()` hẹn giờ thu gọn lại nếu con trỏ kết thúc ngoài đảo/khay sau `DoDragDrop`.
+  - [src/window/tests.rs](src/window/tests.rs): Bổ sung kịch bản bước #17 kiểm chứng chặn mở ngầm Khay tệp khi đang mở `Settings` và hẹn giờ thu gọn `TIMER_AUTO_COLLAPSE_ID` sau drag-out ra ngoài.
+- **Kiểm chứng thực tế:**
+  - `cargo clippy --locked --all-targets -- -D warnings`: Đạt sạch (0 cảnh báo).
+  - `cargo test --locked`: **45/45** tests đạt (`0.37s`).
+  - `cargo build --release --locked`: Tạo `target\release\win-dynamic-island.exe` (**`849,920 bytes`**, `SHA256=3d492c97009fd7e9b52994e4e1e07911e7594a4a4ce323092a0d6b47c26cd0a1`, `VCRUNTIME_DEP=False`, `WINHTTP_DEP=True`, `EMOJI_HITS=0`), đồng bộ sang `dist\win-dynamic-island.exe`, `dist\win-dynamic-island.exe.sha256` và `dist\WinDynamicIsland-win64.zip` (`406,940 bytes`).
+
+---
+
 ## Chốt bàn giao cuối phiên (Session Handoff)
-- **Trạng thái hiện tại:** Đã hoàn tất 3 chặng, kiểm thử sạch, đóng gói và phát hành **v0.3.0** lên GitHub (`tag v0.3.0`, `841,728 bytes`), đồng bộ gói Portable `dist/`, dọn sạch `target/` và duy trì bản `dist\win-dynamic-island.exe` chạy nền ổn định.
+- **Trạng thái hiện tại:** Đã kiểm tra, vá 3 lỗi biên và phát hành **`v0.3.2`** (`tag v0.3.2`, `849,920 bytes`), đồng bộ gói Portable `dist\` và duy trì tiến trình nền ổn định.
 - **Lưu ý cho phiên tiếp theo:**
   - Thư mục `target/` đã được dọn sạch để tiết kiệm dung lượng ổ cứng; lần chạy `cargo` tiếp theo sẽ biên dịch lại phụ thuộc từ đầu.
   - Nếu cần chạy thử bản mới biên dịch trong `target/`, cần thoát tiến trình đang chạy từ `dist\win-dynamic-island.exe` trước (do khóa `SingleInstanceGuard`).

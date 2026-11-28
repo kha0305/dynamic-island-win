@@ -291,6 +291,15 @@ impl WindowController {
         }
     }
 
+    pub(super) fn shelf_allowed_in_current_mode(&self) -> bool {
+        self.config.visible
+            && !self.fullscreen_active
+            && matches!(
+                self.current_effective_mode(),
+                IslandMode::Slim | IslandMode::Compact | IslandMode::Expanded
+            )
+    }
+
     pub(super) fn active_shelf_rect(&self, pill: PillRectDip) -> Option<PillRectDip> {
         if !self.config.visible || self.fullscreen_active {
             return None;
